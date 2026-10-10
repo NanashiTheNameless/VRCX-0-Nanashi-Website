@@ -17,7 +17,11 @@ ARG SIGNED_MANIFEST=0
 ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV SIGNED_MANIFEST=${SIGNED_MANIFEST}
 ENV REMOTESYNC_SKIP_WASM_BUILD=1
-RUN npm run build
+RUN if [ "$SIGNED_MANIFEST" = "1" ]; then \
+      node scripts/manifest.mjs && node scripts/verify-manifest-signature.mjs; \
+    else \
+      npm run build; \
+    fi
 
 FROM rust:1.99-bookworm AS rust-build
 WORKDIR /src

@@ -53,9 +53,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: website-manifest
-          path: |
-            web/dist/web-manifest.json
-            web/dist/web-manifest.sig
+          path: web/dist/**
           if-no-files-found: error
 
   build:
@@ -90,12 +88,13 @@ jobs:
         with:
           name: website-manifest
           path: .website-signing
-      - name: Supply signed metadata to web build
+      - name: Supply verified website assets to web image
         if: matrix.image == 'web'
         run: |
-          mkdir -p web/public
-          cp .website-signing/web-manifest.json web/public/web-manifest.json
-          cp .website-signing/web-manifest.sig web/public/web-manifest.sig
+          mkdir -p web/dist
+          cp -a .website-signing/. web/dist/
+          test -s web/dist/web-manifest.json
+          test -s web/dist/web-manifest.sig
       - name: Download and validate the pinned collector runtime
         if: matrix.image == 'collector'
         id: collector-runtime

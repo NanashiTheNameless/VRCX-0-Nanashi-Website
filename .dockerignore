@@ -3,7 +3,6 @@
 target
 node_modules
 web/node_modules
-web/dist
 web/*.tsbuildinfo
 secrets
 .env
