@@ -1,0 +1,151 @@
+name: remotesync-local
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  pids_limit: 256
+
+services:
+  api:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    user: "10001:65532"
+    group_add: ["10003", "10005", "10007"]
+    network_mode: none
+    environment:
+      REMOTESYNC_INSTANCE_STATEMENT: ${REMOTESYNC_INSTANCE_STATEMENT:-}
+      REMOTESYNC_INSTANCE_SIGNATURE: ${REMOTESYNC_INSTANCE_SIGNATURE:-}
+      REMOTESYNC_API_SOCKET: /run/remotesync/api-sock/api.sock
+      REMOTESYNC_COLLECTOR_API_SOCKET: /run/remotesync/collector-sock/api.sock
+      REMOTESYNC_COLLECTOR_SOCKET: /run/remotesync/collector/ctl.sock
+      REMOTESYNC_MAIL_SOCKET: /run/remotesync/mail/mail.sock
+      REMOTESYNC_BLOB_SOCKET: /run/remotesync/blob/blob.sock
+      REMOTESYNC_DATA_DIR: /data
+      REMOTESYNC_MASTER_KEY_FILE: /run/secrets/remotesync_master_key
+      REMOTESYNC_API_ORIGIN: https://${REMOTESYNC_API_HOST:-localhost}
+      REMOTESYNC_WEB_ORIGINS: ${REMOTESYNC_WEB_ORIGINS:-https://localhost}
+      REMOTESYNC_REGISTRATION: ${REMOTESYNC_REGISTRATION:-request}
+      REMOTESYNC_DEFAULT_QUOTA: ${REMOTESYNC_DEFAULT_QUOTA:-1GiB}
+      REMOTESYNC_COLLECTOR_DEFAULT_ALLOWED: ${REMOTESYNC_COLLECTOR_DEFAULT_ALLOWED:-false}
+    secrets: [remotesync_master_key]
+    volumes:
+      - local-data:/data
+      - local-api-sock:/run/remotesync/api-sock
+      - local-collector-sock:/run/remotesync/collector-sock
+      - local-collector-control:/run/remotesync/collector
+      - local-mail-sock:/run/remotesync/mail
+      - local-blob-sock:/run/remotesync/blob
+    tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
+
+  web:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    user: "10004:65532"
+    network_mode: none
+    environment:
+      REMOTESYNC_WEB_SOCKET: /run/remotesync/web-sock/web.sock
+      REMOTESYNC_API_ORIGIN: https://${REMOTESYNC_API_HOST:-localhost}
+      REMOTESYNC_INSTANCE_STATEMENT: ${REMOTESYNC_INSTANCE_STATEMENT:-}
+      REMOTESYNC_INSTANCE_SIGNATURE: ${REMOTESYNC_INSTANCE_SIGNATURE:-}
+    volumes:
+      - local-web-sock:/run/remotesync/web-sock
+
+  collector:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+      args:
+        VRCX0_COLLECTOR_BINARY: collector/vrcx-0-nanashi-headless-linux-amd64
+        VRCX0_COLLECTOR_APP_VERSION: ${VRCX0_COLLECTOR_APP_VERSION:-}
+        VRCX0_COLLECTOR_APP_COMMIT: ${VRCX0_COLLECTOR_APP_COMMIT:-}
+        VRCX0_COMPAT_APP_VERSION: ${VRCX0_COMPAT_APP_VERSION:-}
+        VRCX0_COMPAT_APP_COMMIT: ${VRCX0_COMPAT_APP_COMMIT:-}
+    profiles: [collector]
+    user: "0:10007"
+    cap_add: [SETUID, SETGID, CHOWN]
+    network_mode: bridge
+    environment:
+      REMOTESYNC_COLLECTOR_SOCKET: /run/remotesync/collector/ctl.sock
+      REMOTESYNC_COLLECTOR_API_SOCKET: /run/remotesync/collector-sock/api.sock
+      REMOTESYNC_COLLECTOR_TMPFS: /run/collector
+      REMOTESYNC_COLLECTOR_MAX_SESSIONS: ${REMOTESYNC_COLLECTOR_MAX_SESSIONS:-64}
+    volumes:
+      - local-collector-control:/run/remotesync/collector
+      - local-collector-sock:/run/remotesync/collector-sock
+    tmpfs:
+      - "/run/collector:size=512m,noexec,nosuid,nodev,uid=0,gid=10007,mode=0711"
+      - "/run/vrcx-runtime:size=256m,exec,nosuid,nodev,uid=0,gid=10007,mode=0750"
+      - "/tmp:size=16m,noexec,nosuid,nodev"
+
+  mailer:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.mailer
+    user: "10003:10003"
+    network_mode: bridge
+    environment:
+      REMOTESYNC_MAIL_SOCKET: /run/remotesync/mail/mail.sock
+      REMOTESYNC_MAIL_FROM: ${REMOTESYNC_MAIL_FROM:-RemoteSync Local <local@example.invalid>}
+      REMOTESYNC_RESEND_KEY_FILE: /run/secrets/resend_api_key
+    secrets: [resend_api_key]
+    volumes:
+      - local-mail-sock:/run/remotesync/mail
+
+  blobstore:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.blobstore
+    user: "10005:10005"
+    network_mode: none
+    environment:
+      REMOTESYNC_BLOB_SOCKET: /run/remotesync/blob/blob.sock
+      REMOTESYNC_BLOB_BACKEND: local
+      REMOTESYNC_BLOB_DIR: /blobs
+    volumes:
+      - local-blob-sock:/run/remotesync/blob
+      - local-blobs:/blobs
+
+  cloudflared:
+    <<: *hardening
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    network_mode: bridge
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - local-api-sock:/run/remotesync/api-sock
+      - local-web-sock:/run/remotesync/web-sock
+    secrets: [cloudflared_credentials]
+    depends_on: [api, web]
+
+secrets:
+  remotesync_master_key:
+    file: ./secrets/remotesync_master_key
+  resend_api_key:
+    file: ./secrets/resend_api_key
+  cloudflared_credentials:
+    file: ./secrets/cloudflared_credentials.json
+
+volumes:
+  local-data: {}
+  local-blobs: {}
+  local-api-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10001,gid=65532,mode=0750" }
+  local-collector-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10001,gid=10007,mode=0770" }
+  local-collector-control:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10007,gid=10007,mode=0770" }
+  local-web-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10004,gid=65532,mode=0750" }
+  local-mail-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10003,gid=10003,mode=0770" }
+  local-blob-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10005,gid=10005,mode=0770" }

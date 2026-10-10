@@ -1,0 +1,17 @@
+/target
+node_modules/
+/web/dist/
+/web/public/remotesync_protocol.wasm
+*.tsbuildinfo
+/secrets/
+.env
+*.db
+*.db-wal
+*.db-shm
+
+*nogit*
+*githide*
+*.nogit.*
+*.githide.*
+*.gitignore.*
+githide/

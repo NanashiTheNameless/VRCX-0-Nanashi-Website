@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["crates/blobstore", "crates/collector", "crates/mailer", "crates/protocol", "crates/protocol-wasm", "crates/server", "crates/web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/NanashiTheNameless/VRCX-0-Nanashi-Website"
+rust-version = "1.88"

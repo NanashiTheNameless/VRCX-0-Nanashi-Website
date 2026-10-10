@@ -1,0 +1,10 @@
+tunnel: <TUNNEL_ID>
+credentials-file: /run/secrets/cloudflared_credentials
+no-autoupdate: true
+ingress:
+  - hostname: vrcx-api.example.com
+    path: ^/(v1|web/v1|public/v1)/
+    service: unix:/run/remotesync/api-sock/api.sock
+  - hostname: vrcx.example.com
+    service: unix:/run/remotesync/web-sock/web.sock
+  - service: http_status:404

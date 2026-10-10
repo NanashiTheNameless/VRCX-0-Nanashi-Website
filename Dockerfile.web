@@ -1,0 +1,32 @@
+FROM rust:1.99-bookworm AS protocol-wasm
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
+COPY crates ./crates
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo build --release -p vrcx-0-nanashi-website-protocol-wasm --target wasm32-unknown-unknown
+
+FROM node:26-bookworm-slim AS web-build
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+COPY --from=protocol-wasm /src/target/wasm32-unknown-unknown/release/vrcx_0_nanashi_website_protocol_wasm.wasm ./public/remotesync_protocol.wasm
+ARG SOURCE_COMMIT=unknown
+ARG SIGNED_MANIFEST=0
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
+ENV SIGNED_MANIFEST=${SIGNED_MANIFEST}
+ENV REMOTESYNC_SKIP_WASM_BUILD=1
+RUN npm run build
+
+FROM rust:1.99-bookworm AS rust-build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY --from=web-build /src/web/dist ./web/dist
+RUN cargo build --release -p vrcx-0-nanashi-website-web
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=rust-build /src/target/release/remotesync-web /usr/local/bin/remotesync-web
+USER 10004:65532
+ENTRYPOINT ["/usr/local/bin/remotesync-web"]

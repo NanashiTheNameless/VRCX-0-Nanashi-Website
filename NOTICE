@@ -1,0 +1,13 @@
+VRCX-0-Nanashi-Website
+Copyright (C) 2026 NamelessNanashi
+Licensed under the GNU General Public License v3.0 only. See LICENSE.
+
+The website bundles the 0xProto font (https://github.com/0xType/0xProto),
+Copyright (c) 2026, 0xType Project Authors, licensed under the SIL Open Font
+License 1.1. The full text is in LICENSES/OFL-1.1-0xProto.txt.
+
+Generated word passphrases use the EFF Large Wordlist for Passphrases
+(https://www.eff.org/dice), by the Electronic Frontier Foundation, licensed
+under Creative Commons Attribution 3.0 United States
+(https://creativecommons.org/licenses/by/3.0/us/). The list is bundled
+unchanged in web/src/effWords.ts.

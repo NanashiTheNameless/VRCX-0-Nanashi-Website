@@ -1,0 +1,204 @@
+name: Build and publish images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remotesync-images
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cargo fmt --all -- --check
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: node --test "scripts/*.test.mjs"
+        working-directory: web
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Sign website asset manifest
+        if: github.ref == 'refs/heads/main'
+        env:
+          WEBSITE_MANIFEST_PRIVATE_KEY: ${{ secrets.WEBSITE_MANIFEST_PRIVATE_KEY }}
+        run: node scripts/sign-manifest.mjs
+        working-directory: web
+      - name: Verify signature against the desktop-pinned key
+        if: github.ref == 'refs/heads/main'
+        run: node scripts/verify-manifest-signature.mjs
+        working-directory: web
+      - name: Upload website manifest and signature
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-manifest
+          path: |
+            web/dist/web-manifest.json
+            web/dist/web-manifest.sig
+          if-no-files-found: error
+
+  build:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            dockerfile: Dockerfile.api
+          - image: mailer
+            dockerfile: Dockerfile.mailer
+          - image: blobstore
+            dockerfile: Dockerfile.blobstore
+          - image: web
+            dockerfile: Dockerfile.web
+          - image: collector
+            dockerfile: Dockerfile.collector
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download signed website manifest
+        if: matrix.image == 'web'
+        uses: actions/download-artifact@v8
+        with:
+          name: website-manifest
+          path: .website-signing
+      - name: Supply signed metadata to web build
+        if: matrix.image == 'web'
+        run: |
+          mkdir -p web/public
+          cp .website-signing/web-manifest.json web/public/web-manifest.json
+          cp .website-signing/web-manifest.sig web/public/web-manifest.sig
+      - name: Download and validate the pinned collector runtime
+        if: matrix.image == 'collector'
+        id: collector-runtime
+        run: |
+          set -euo pipefail
+          mkdir -p collector
+
+          rolling_base="https://github.com/NanashiTheNameless/VRCX-0-Nanashi/releases/download/Nightly-Rolling"
+          curl --fail --location --retry 3 \
+            "$rolling_base/vrcx-0-nanashi-headless-linux-amd64.json" \
+            -o /tmp/collector-runtime-rolling.json
+          APP_VERSION="$(jq -er '.appVersion | strings | select(length > 0)' /tmp/collector-runtime-rolling.json)"
+          APP_COMMIT="$(jq -er '.appCommit | strings | select(test("^[0-9a-fA-F]{40}$"))' /tmp/collector-runtime-rolling.json)"
+          [[ "$APP_VERSION" =~ ^[1-9][0-9]{0,1}\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})-Nightly-[0-9a-f]{7}$ ]]
+
+          tag="v${APP_VERSION}"
+          base="https://github.com/NanashiTheNameless/VRCX-0-Nanashi/releases/download/${tag}"
+          curl --fail --location --retry 3 "$base/vrcx-0-nanashi-headless-linux-amd64" -o collector/vrcx-0-nanashi-headless-linux-amd64
+          curl --fail --location --retry 3 "$base/vrcx-0-nanashi-headless-linux-amd64.json" -o /tmp/collector-runtime.json
+          chmod +x collector/vrcx-0-nanashi-headless-linux-amd64
+          cmp /tmp/collector-runtime-rolling.json /tmp/collector-runtime.json
+          test "$(jq -r .appVersion /tmp/collector-runtime.json)" = "$APP_VERSION"
+          test "$(jq -r .appCommit /tmp/collector-runtime.json)" = "$APP_COMMIT"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "app_commit=$APP_COMMIT" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+      - name: Read workspace version
+        id: version
+        run: echo "value=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "vrcx-0-nanashi-website-server") | .version')" >> "$GITHUB_OUTPUT"
+      - name: Build and push multi-architecture image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.image == 'collector' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: true
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+            SIGNED_MANIFEST=${{ matrix.image == 'web' && '1' || '0' }}
+            VRCX0_COLLECTOR_BINARY=collector/vrcx-0-nanashi-headless-linux-amd64
+            VRCX0_COLLECTOR_APP_VERSION=${{ steps.collector-runtime.outputs.app_version }}
+            VRCX0_COLLECTOR_APP_COMMIT=${{ steps.collector-runtime.outputs.app_commit }}
+            VRCX0_COMPAT_APP_VERSION=${{ steps.collector-runtime.outputs.app_version }}
+            VRCX0_COMPAT_APP_COMMIT=${{ steps.collector-runtime.outputs.app_commit }}
+          tags: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign image digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Attest image provenance
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+  publish-latest:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Move latest tags after all image builds succeed
+        env:
+          IMAGE_PREFIX: ghcr.io/nanashithenameless/vrcx-0-nanashi-website
+          SOURCE_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for component in api mailer blobstore web collector; do
+            docker buildx imagetools create \
+              --tag "${IMAGE_PREFIX}-${component}:latest" \
+              "${IMAGE_PREFIX}-${component}:${SOURCE_TAG}"
+          done

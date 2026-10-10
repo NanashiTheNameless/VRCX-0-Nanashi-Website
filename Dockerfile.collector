@@ -1,0 +1,30 @@
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS artifact-check
+ARG TARGETARCH
+ARG VRCX0_COLLECTOR_BINARY
+ARG VRCX0_COLLECTOR_APP_VERSION
+ARG VRCX0_COLLECTOR_APP_COMMIT
+ARG VRCX0_COMPAT_APP_VERSION
+ARG VRCX0_COMPAT_APP_COMMIT
+COPY web/scripts/collector-input.mjs /usr/local/bin/collector-input.mjs
+COPY ${VRCX0_COLLECTOR_BINARY} /tmp/vrcx-0-nanashi-headless
+RUN node /usr/local/bin/collector-input.mjs \
+    /tmp/vrcx-0-nanashi-headless \
+    "$VRCX0_COLLECTOR_APP_VERSION" \
+    "$VRCX0_COLLECTOR_APP_COMMIT" \
+    "$VRCX0_COMPAT_APP_VERSION" \
+    "$VRCX0_COMPAT_APP_COMMIT" \
+    "$TARGETARCH" \
+    /tmp/collector-runtime.json
+
+FROM rust:1.99-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release --locked -p vrcx-0-nanashi-website-collector
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=build /src/target/release/remotesync-collector /usr/local/bin/remotesync-collector
+COPY --from=artifact-check --chmod=0555 /tmp/vrcx-0-nanashi-headless /usr/local/bin/vrcx-0-nanashi-headless
+COPY --from=artifact-check /tmp/collector-runtime.json /usr/local/share/remotesync/collector-runtime.json
+USER 0:10007
+ENTRYPOINT ["/usr/local/bin/remotesync-collector"]

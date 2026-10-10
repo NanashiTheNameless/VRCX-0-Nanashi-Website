@@ -1,0 +1,54 @@
+name: Clean up GHCR images
+
+on:
+  schedule:
+    - cron: "23 5 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview deletions without removing images"
+        type: boolean
+        default: true
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remotesync-images
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: read
+    steps:
+      - name: Preview retained and deleted versions
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f
+        with:
+          packages: vrcx-0-nanashi-website-api,vrcx-0-nanashi-website-mailer,vrcx-0-nanashi-website-blobstore,vrcx-0-nanashi-website-web,vrcx-0-nanashi-website-collector
+          exclude-tags: latest
+          keep-n-tagged: 1
+          delete-untagged: true
+          delete-orphaned-images: true
+          validate: true
+          dry-run: true
+
+  cleanup:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Retain latest and one previous tagged build
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f
+        with:
+          packages: vrcx-0-nanashi-website-api,vrcx-0-nanashi-website-mailer,vrcx-0-nanashi-website-blobstore,vrcx-0-nanashi-website-web,vrcx-0-nanashi-website-collector
+          exclude-tags: latest
+          keep-n-tagged: 1
+          delete-untagged: true
+          delete-orphaned-images: true
+          validate: true
+          dry-run: false

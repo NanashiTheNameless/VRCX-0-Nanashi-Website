@@ -1,0 +1,147 @@
+name: remotesync
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  pids_limit: 256
+
+services:
+  api:
+    <<: *hardening
+    image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-api:latest
+    user: "10001:65532"
+    group_add: ["10003", "10005", "10007"]
+    network_mode: none
+    environment:
+      REMOTESYNC_INSTANCE_STATEMENT: ${REMOTESYNC_INSTANCE_STATEMENT:-}
+      REMOTESYNC_INSTANCE_SIGNATURE: ${REMOTESYNC_INSTANCE_SIGNATURE:-}
+      REMOTESYNC_API_SOCKET: /run/remotesync/api-sock/api.sock
+      REMOTESYNC_COLLECTOR_API_SOCKET: /run/remotesync/collector-sock/api.sock
+      REMOTESYNC_COLLECTOR_SOCKET: /run/remotesync/collector/ctl.sock
+      REMOTESYNC_MAIL_SOCKET: /run/remotesync/mail/mail.sock
+      REMOTESYNC_BLOB_SOCKET: /run/remotesync/blob/blob.sock
+      REMOTESYNC_DATA_DIR: /data
+      REMOTESYNC_MASTER_KEY_FILE: /run/secrets/remotesync_master_key
+      REMOTESYNC_API_ORIGIN: https://${REMOTESYNC_API_HOST}
+      REMOTESYNC_WEB_ORIGINS: ${REMOTESYNC_WEB_ORIGINS:-https://vrcx.namelessnanashi.dev}
+      REMOTESYNC_REGISTRATION: ${REMOTESYNC_REGISTRATION:-closed}
+      REMOTESYNC_DEFAULT_QUOTA: ${REMOTESYNC_DEFAULT_QUOTA:-1GiB}
+      REMOTESYNC_COLLECTOR_DEFAULT_ALLOWED: ${REMOTESYNC_COLLECTOR_DEFAULT_ALLOWED:-true}
+      REMOTESYNC_POLICY_URL: ${REMOTESYNC_POLICY_URL:-}
+    secrets: [remotesync_master_key]
+    volumes:
+      - data:/data
+      - api-sock:/run/remotesync/api-sock
+      - collector-sock:/run/remotesync/collector-sock
+      - collector-control:/run/remotesync/collector
+      - mail-sock:/run/remotesync/mail
+      - blob-sock:/run/remotesync/blob
+    tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
+    mem_limit: 512m
+
+  web:
+    <<: *hardening
+    image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-web:latest
+    user: "10004:65532"
+    network_mode: none
+    environment:
+      REMOTESYNC_WEB_SOCKET: /run/remotesync/web-sock/web.sock
+      REMOTESYNC_API_ORIGIN: https://${REMOTESYNC_API_HOST}
+      REMOTESYNC_INSTANCE_STATEMENT: ${REMOTESYNC_INSTANCE_STATEMENT:-}
+      REMOTESYNC_INSTANCE_SIGNATURE: ${REMOTESYNC_INSTANCE_SIGNATURE:-}
+    volumes:
+      - web-sock:/run/remotesync/web-sock
+    mem_limit: 128m
+
+  collector:
+    <<: *hardening
+    image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-collector:latest
+    profiles: [collector]
+    user: "0:10007"
+    cap_add: [SETUID, SETGID, CHOWN]
+    network_mode: bridge
+    environment:
+      REMOTESYNC_COLLECTOR_SOCKET: /run/remotesync/collector/ctl.sock
+      REMOTESYNC_COLLECTOR_API_SOCKET: /run/remotesync/collector-sock/api.sock
+      REMOTESYNC_COLLECTOR_TMPFS: /run/collector
+      REMOTESYNC_COLLECTOR_MAX_SESSIONS: ${REMOTESYNC_COLLECTOR_MAX_SESSIONS:-64}
+    volumes:
+      - collector-control:/run/remotesync/collector
+      - collector-sock:/run/remotesync/collector-sock
+    tmpfs:
+      - "/run/collector:size=512m,noexec,nosuid,nodev,uid=0,gid=10007,mode=0711"
+      - "/run/vrcx-runtime:size=256m,exec,nosuid,nodev,uid=0,gid=10007,mode=0750"
+      - "/tmp:size=16m,noexec,nosuid,nodev"
+    mem_limit: 768m
+
+  mailer:
+    <<: *hardening
+    image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-mailer:latest
+    user: "10003:10003"
+    network_mode: bridge
+    environment:
+      REMOTESYNC_MAIL_SOCKET: /run/remotesync/mail/mail.sock
+      REMOTESYNC_MAIL_FROM: ${REMOTESYNC_MAIL_FROM}
+      REMOTESYNC_RESEND_KEY_FILE: /run/secrets/resend_api_key
+    secrets: [resend_api_key]
+    volumes:
+      - mail-sock:/run/remotesync/mail
+    mem_limit: 128m
+
+  blobstore:
+    <<: *hardening
+    image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-blobstore:latest
+    user: "10005:10005"
+    network_mode: bridge
+    environment:
+      REMOTESYNC_BLOB_SOCKET: /run/remotesync/blob/blob.sock
+      REMOTESYNC_BLOB_BACKEND: ${REMOTESYNC_BLOB_BACKEND:-s3}
+      REMOTESYNC_S3_ENDPOINT: ${REMOTESYNC_S3_ENDPOINT:-}
+      REMOTESYNC_S3_BUCKET: ${REMOTESYNC_S3_BUCKET:-}
+      REMOTESYNC_S3_REGION: ${REMOTESYNC_S3_REGION:-auto}
+      REMOTESYNC_S3_PATH_STYLE: ${REMOTESYNC_S3_PATH_STYLE:-true}
+      REMOTESYNC_BLOB_CREDENTIALS_FILE: /run/secrets/blob_credentials
+    secrets: [blob_credentials]
+    volumes:
+      - blob-sock:/run/remotesync/blob
+    mem_limit: 256m
+
+  cloudflared:
+    <<: *hardening
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    network_mode: bridge
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - api-sock:/run/remotesync/api-sock
+      - web-sock:/run/remotesync/web-sock
+    secrets: [cloudflared_credentials]
+    depends_on: [api, web]
+    mem_limit: 256m
+
+secrets:
+  remotesync_master_key:
+    file: ./secrets/remotesync_master_key
+  resend_api_key:
+    file: ./secrets/resend_api_key
+  blob_credentials:
+    file: ./secrets/blob_credentials
+  cloudflared_credentials:
+    file: ./secrets/cloudflared_credentials.json
+
+volumes:
+  data: {}
+  api-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10001,gid=65532,mode=0750" }
+  collector-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10001,gid=10007,mode=0770" }
+  collector-control:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10007,gid=10007,mode=0770" }
+  web-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10004,gid=65532,mode=0750" }
+  mail-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10003,gid=10003,mode=0770" }
+  blob-sock:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10005,gid=10005,mode=0770" }

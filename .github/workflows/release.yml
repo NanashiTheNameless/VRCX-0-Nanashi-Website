@@ -1,0 +1,85 @@
+name: Publish rolling deployment release
+
+on:
+  workflow_run:
+    workflows: [Build and publish images]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remotesync-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: website-manifest
+          path: web-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Prepare release assets
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/cloudflared
+          cp docker-compose.yml release-assets/compose.yaml
+          cp .env.example release-assets/.env.example
+          cp cloudflared/config.example.yml release-assets/cloudflared/config.yml
+          cp web-assets/web-manifest.json web-assets/web-manifest.sig release-assets/
+          : > release-assets/digests.txt
+          for component in api mailer blobstore web collector; do
+            image="ghcr.io/nanashithenameless/vrcx-0-nanashi-website-${component}:latest"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{.Digest}}')"
+            test "${digest#sha256:}" != "$digest"
+            printf '%s %s\n' "$image" "$digest" >> release-assets/digests.txt
+          done
+          printf 'Source commit: %s\n' "$SOURCE_SHA" > release-assets/RELEASE.txt
+      - name: Check that this is the newest successful image build
+        id: freshness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          latest_run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/images.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].id')"
+          if [ "$latest_run" = "$SOURCE_RUN_ID" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo "Skipping stale workflow run $SOURCE_RUN_ID; newest successful image run is $latest_run."
+          fi
+      - name: Update rolling release
+        if: steps.freshness.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/Latest" >/dev/null 2>&1; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/Latest" -X PATCH -f sha="$SOURCE_SHA" -F force=true >/dev/null
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref=refs/tags/Latest -f sha="$SOURCE_SHA" >/dev/null
+          fi
+          if gh release view Latest >/dev/null 2>&1; then
+            gh release edit Latest --title 'RemoteSync Latest' --notes 'Rolling deployment files and the signed website asset manifest for the latest successfully published images.' --latest
+          else
+            gh release create Latest --title 'RemoteSync Latest' --notes 'Rolling deployment files and the signed website asset manifest for the latest successfully published images.' --latest
+          fi
+          gh release upload Latest release-assets/compose.yaml release-assets/.env.example release-assets/digests.txt release-assets/RELEASE.txt release-assets/web-manifest.json release-assets/web-manifest.sig release-assets/cloudflared/config.yml --clobber

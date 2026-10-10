@@ -1,0 +1,18 @@
+[package]
+name = "vrcx-0-nanashi-website-protocol-wasm"
+description = "Low-level WebAssembly exports for browser-side RemoteSync verification and decryption"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+vrcx-0-nanashi-website-protocol = { path = "../protocol" }
