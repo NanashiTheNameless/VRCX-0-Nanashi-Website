@@ -159,6 +159,15 @@ impl Harness {
     }
 
     async fn post_json(&self, path: &str, token: Option<&str>, body: Value) -> Reply {
+        let body = if matches!(path, "/web/v1/auth/signup" | "/web/v1/auth/login") {
+            let mut body = body;
+            if let Some(fields) = body.as_object_mut() {
+                fields.insert("altcha".into(), json!(self.auth_altcha().await));
+            }
+            body
+        } else {
+            body
+        };
         self.call(
             Method::POST,
             path,
@@ -167,6 +176,20 @@ impl Harness {
             Body::from(body.to_string()),
         )
         .await
+    }
+
+    async fn auth_altcha(&self) -> String {
+        let challenge: altcha::Challenge =
+            serde_json::from_value(self.get("/web/v1/auth/altcha/challenge", None).await.json())
+                .unwrap();
+        let solution = altcha::solve_challenge(altcha::SolveChallengeOptions::new(&challenge))
+            .unwrap()
+            .expect("ALTCHA challenge has a solution");
+        let payload = altcha::Payload {
+            challenge,
+            solution,
+        };
+        data_encoding::BASE64.encode(&serde_json::to_vec(&payload).unwrap())
     }
 }
 
