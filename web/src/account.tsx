@@ -109,6 +109,10 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
   const [emailChangeSent, setEmailChangeSent] = useState(false)
 
   const reauthenticate = async () => {
+    if (!currentCode.trim()) throw new Error('Enter the current verification code first.')
+    if (method === 'email' && !currentEmailSent) {
+      throw new Error('Send an email verification code first, then enter it here.')
+    }
     await request('/reauth', {
       method: 'POST',
       body: JSON.stringify({ method, code: currentCode }),
@@ -141,7 +145,7 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
     <section className="card wide">
       <h2>Two-factor method</h2>
       <p className="muted">Current method: {twofaMethod === 'totp' ? 'Authenticator app' : twofaMethod === 'email' ? 'Email code' : 'Not set'}. Verify your current method before switching.</p>
-      {twofaMethod !== 'totp' && !totpSetup && <button onClick={() => act(async () => {
+      {twofaMethod !== 'totp' && !totpSetup && <button disabled={!currentCode.trim() || (method === 'email' && !currentEmailSent)} onClick={() => act(async () => {
         await reauthenticate()
         setTotpSetup(await request('/security/twofa/totp', { method: 'POST' }))
       })}>Set up authenticator app</button>}
