@@ -63,10 +63,40 @@ function PrivacyPage() {
   </main>
 }
 
+function NotFoundPage() {
+  return <main className="landing-shell">
+    <header className="landing-nav">
+      <a className="landing-brand" href="/"><img className="landing-mark" src="/vrcx-0-nanashi.png" alt="" /><span>VRCX-0-NANASHI</span></a>
+      <nav aria-label="Main navigation"><a href="/">Home</a><a href="https://github.com/NanashiTheNameless/VRCX-0-Nanashi" target="_blank" rel="noreferrer">Source <ArrowUpRight size={14}/></a></nav>
+    </header>
+    <section className="landing-hero">
+      <div className="landing-copy">
+        <div className="eyebrow">404</div>
+        <h1>Page not found</h1>
+        <p>This page does not exist or has moved.</p>
+        <div className="landing-actions"><a className="landing-button primary" href="/">Back to home</a></div>
+      </div>
+      <img className="landing-logo" src="/vrcx-0-nanashi.png" alt="VRCX-0-Nanashi app icon" />
+    </section>
+    <footer className="landing-footer">
+      <a className="landing-brand" href="/"><img className="landing-mark" src="/vrcx-0-nanashi.png" alt="" /> VRCX-0-NANASHI</a>
+      <a href="/">Home</a>
+      <a href="/privacy">Privacy</a>
+    </footer>
+  </main>
+}
+
+function isKnownPage(path: string) {
+  return path === '/' || path === '/privacy' || path === '/themes' || path === '/licenses'
+    || path === '/collections' || path === '/pair'
+    || path === '/invite' || path === '/verify' || path === '/reset'
+    || path.startsWith('/open/') || path.startsWith('/c/')
+}
+
 function App() {
   const [token, setToken] = useState(getToken())
   const [me, setMe] = useState<Me | null>(null)
-  const [page, setPage] = useState(location.pathname.startsWith('/pair') ? 'pair' : 'home')
+  const [page, setPage] = useState(location.pathname === '/pair' ? 'pair' : 'home')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
@@ -94,6 +124,7 @@ function App() {
   if (location.pathname === '/licenses') return <Licenses/>
   if (location.pathname.startsWith('/c/')) return <PublicCollection code={location.pathname.split('/')[2] ?? ''}/>
   if (location.pathname === '/collections') return <PublicDirectory/>
+  if (!isKnownPage(location.pathname)) return <NotFoundPage/>
 
   if (!token || !me) return <main className="auth-shell"><div className="brand"><Waves size={22}/><span>RemoteSync</span></div><AuthForm busy={busy} error={error} notice={notice} onAuthenticated={authenticated}/><label className="check-label keep-signed-in"><input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)}/>Keep me signed in on this browser</label><BuildFooter build={buildInfo}/></main>
 

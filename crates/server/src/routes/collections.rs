@@ -22,6 +22,7 @@ pub fn public_router() -> Router<Shared> {
     Router::new()
         .route("/collections", get(directory))
         .route("/collections/{code}", get(public_get))
+        .fallback(crate::routes::api_not_found)
 }
 
 fn normalize_code(code: &str) -> ApiResult<String> {

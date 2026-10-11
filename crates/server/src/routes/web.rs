@@ -92,6 +92,7 @@ pub fn router() -> Router<Shared> {
         )
         .route("/admin/audit", get(admin_audit))
         .merge(crate::routes::v1::shared_routes())
+        .fallback(crate::routes::api_not_found)
 }
 
 fn admin_gate(state: &AppState, auth: &WebAuth) -> ApiResult<()> {

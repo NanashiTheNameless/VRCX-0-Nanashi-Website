@@ -51,6 +51,7 @@ pub fn router() -> Router<Shared> {
         .route("/account/tokens/current", delete(revoke_current))
         .route("/account/reauth", post(reauth))
         .merge(shared_routes())
+        .fallback(crate::routes::api_not_found)
 }
 
 pub fn shared_routes() -> Router<Shared> {

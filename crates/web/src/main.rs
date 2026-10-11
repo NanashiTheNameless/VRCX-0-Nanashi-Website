@@ -232,6 +232,15 @@ async fn serve_asset(State(app): State<Arc<App>>, request: Request<Body>) -> Res
     } else {
         normalized
     };
+    let accepts_html = request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().starts_with("text/html"))
+        });
     if candidate.split('/').any(|part| part == "..") || candidate.contains('\\') {
         return status(StatusCode::BAD_REQUEST);
     }
@@ -240,7 +249,7 @@ async fn serve_asset(State(app): State<Arc<App>>, request: Request<Body>) -> Res
         .get(candidate)
         .map(|bytes| (candidate, *bytes))
         .or_else(|| {
-            if !candidate.contains('.') {
+            if !candidate.contains('.') || accepts_html {
                 app.assets
                     .get("index.html")
                     .map(|bytes| ("index.html", *bytes))
@@ -251,6 +260,9 @@ async fn serve_asset(State(app): State<Arc<App>>, request: Request<Body>) -> Res
     match asset {
         Some((asset_path, bytes)) => {
             let mut response = make_response(&app, asset_path, bytes.to_vec());
+            if !is_app_route(path) {
+                *response.status_mut() = StatusCode::NOT_FOUND;
+            }
             if path == "/themes" {
                 response
                     .headers_mut()
@@ -260,6 +272,22 @@ async fn serve_asset(State(app): State<Arc<App>>, request: Request<Body>) -> Res
         }
         None => status(StatusCode::NOT_FOUND),
     }
+}
+
+fn is_app_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/privacy"
+            | "/themes"
+            | "/licenses"
+            | "/collections"
+            | "/pair"
+            | "/invite"
+            | "/verify"
+            | "/reset"
+    ) || path.starts_with("/open/")
+        || path.starts_with("/c/")
+
 }
 
 fn content_security_policy(
