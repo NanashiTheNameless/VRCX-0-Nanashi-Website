@@ -260,7 +260,7 @@ async fn serve_asset(State(app): State<Arc<App>>, request: Request<Body>) -> Res
     match asset {
         Some((asset_path, bytes)) => {
             let mut response = make_response(&app, asset_path, bytes.to_vec());
-            if !is_app_route(path) {
+            if asset_path == "index.html" && !is_app_route(path) {
                 *response.status_mut() = StatusCode::NOT_FOUND;
             }
             if path == "/themes" {
@@ -278,6 +278,7 @@ fn is_app_route(path: &str) -> bool {
     matches!(
         path,
         "/" | "/privacy"
+            | "/dashboard"
             | "/themes"
             | "/licenses"
             | "/collections"
