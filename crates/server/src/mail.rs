@@ -62,7 +62,6 @@ impl Mailer {
 pub struct Email {
     pub subject: String,
     pub text: String,
-    pub html: String,
 }
 
 impl Email {
@@ -71,7 +70,7 @@ impl Email {
             to: address.to_owned(),
             subject: self.subject,
             text: self.text,
-            html: Some(self.html),
+            html: None,
             idempotency_key,
         }
     }
@@ -80,40 +79,18 @@ impl Email {
 const FOOTER: &str =
     "This is an automatic message from VRCX-0-Nanashi RemoteSync. Replies are not read.";
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 fn render(subject: &str, paragraphs: &[String]) -> Email {
     let mut text = String::new();
-    let mut html = String::from("<!doctype html><html><body style=\"font-family: monospace\">");
     for paragraph in paragraphs {
         text.push_str(paragraph);
         text.push_str("\n\n");
-        if paragraph.starts_with("https://") && !paragraph.contains(char::is_whitespace) {
-            let url = escape(paragraph);
-            html.push_str(&format!("<p><a href=\"{url}\">{url}</a></p>"));
-        } else {
-            html.push_str(&format!(
-                "<p>{}</p>",
-                escape(paragraph).replace('\n', "<br>")
-            ));
-        }
     }
     text.push_str("-- \n");
     text.push_str(FOOTER);
     text.push('\n');
-    html.push_str(&format!(
-        "<hr><p><small>{}</small></p></body></html>",
-        escape(FOOTER)
-    ));
     Email {
         subject: subject.to_owned(),
         text,
-        html,
     }
 }
 
@@ -247,7 +224,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn html_is_escaped_and_links_are_plain() {
+    fn email_body_is_plain_text_only() {
         let email = render(
             "S",
             &[
@@ -255,13 +232,8 @@ mod tests {
                 "https://vrcx.namelessnanashi.dev/verify?t=a&b".into(),
             ],
         );
-        assert!(email.html.contains("&lt;script&gt;"));
-        assert!(
-            email
-                .html
-                .contains("href=\"https://vrcx.namelessnanashi.dev/verify?t=a&amp;b\"")
-        );
-        assert!(!email.html.contains("<img"));
         assert!(email.text.contains(FOOTER));
+        assert!(email.text.contains("<script>x</script>"));
+        assert!(email.to("me@example.com", "test".into()).html.is_none());
     }
 }

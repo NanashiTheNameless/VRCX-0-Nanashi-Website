@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react'
+import 'altcha'
+import type {} from 'altcha/types/react'
 import { createRoot } from 'react-dom/client'
 import { Activity, ArrowUpRight, Database, Globe, KeyRound, LogOut, Shield, ShieldCheck, Users, Waves } from 'lucide-react'
 import { createPasskeyEnvelope, createPassphraseEnvelope, createPrfCredential, generatePassphrase, generateWordPassphrase, normalizeSyncKey, openPasskeyEnvelope, openPassphraseEnvelope, type Envelope } from './envelopes'
 import { configPromise, getToken, request, tokenKey } from './api'
 import { HistoryBrowser } from './history'
 import { RelayPage } from './relay'
-import { ChosenPassphrase, Clients, Collections, DeviceTransfer, KeyUnlock, Pairing, RecoveryCodes, Tokens, YourData } from './account'
+import { AccountSecurity, ChosenPassphrase, Clients, Collections, DeviceTransfer, KeyUnlock, Pairing, RecoveryCodes, Tokens, YourData } from './account'
 import { ImagesToggle, useImagesEnabled } from './images'
 import { Licenses, Themes } from './publicPages'
 import { forgetProtocolWorker, unlockProtocolWorker } from './protocol'
@@ -19,6 +21,7 @@ function LandingPage() {
     <header className="landing-nav">
       <a className="landing-brand" href="/"><img className="landing-mark" src="/vrcx-0-nanashi.png" alt="" /><span>VRCX-0-NANASHI</span></a>
       <nav aria-label="Main navigation">
+        <a href="/dashboard">Dashboard</a>
         <a href="/privacy">Privacy</a>
         <a href="https://github.com/NanashiTheNameless/VRCX-0-Nanashi" target="_blank" rel="noreferrer">Source <ArrowUpRight size={14}/></a>
       </nav>
@@ -29,6 +32,7 @@ function LandingPage() {
         <p>A personal fork of VRCX-0 for VRChat.</p>
         <div className="landing-actions">
           <a className="landing-button primary" href="https://github.com/NanashiTheNameless/VRCX-0-Nanashi/releases/tag/Nightly-Rolling" target="_blank" rel="noreferrer">Download <ArrowUpRight size={16}/></a>
+          <a className="landing-button secondary" href="/dashboard">Dashboard</a>
           <a className="landing-button secondary" href="/privacy">Privacy</a>
         </div>
       </div>
@@ -87,7 +91,7 @@ function NotFoundPage() {
 }
 
 function isKnownPage(path: string) {
-  return path === '/' || path === '/privacy' || path === '/themes' || path === '/licenses'
+  return path === '/' || path === '/privacy' || path === '/dashboard' || path === '/themes' || path === '/licenses'
     || path === '/collections' || path === '/pair'
     || path === '/invite' || path === '/verify' || path === '/reset'
     || path.startsWith('/open/') || path.startsWith('/c/')
@@ -106,6 +110,11 @@ function App() {
   const [buildInfo, setBuildInfo] = useState<{version:string,manifestSha256:string}|null>(null)
 
   useEffect(() => { if (token) request<Me>('/me').then(setMe).catch(e => { setError(e.message); sessionStorage.removeItem(tokenKey); localStorage.removeItem(tokenKey); setToken(null); setBrowserKeyUnlocked(false); void forgetProtocolWorker() }) }, [token])
+  useEffect(() => {
+    if (me?.state !== 'pending') return
+    const timer = window.setInterval(() => request<Me>('/me').then(setMe).catch(() => {}), 30_000)
+    return () => window.clearInterval(timer)
+  }, [me?.state])
   useEffect(() => { fetch('/build.json').then(r=>r.json()).then(setBuildInfo).catch(()=>{}) }, [])
   const act = async (work: () => Promise<void>) => { setBusy(true); setError(''); setNotice(''); try { await work() } catch (e) { setError((e as Error).message) } finally { setBusy(false) } }
   const signOut = () => act(async () => { try { await request('/session', { method: 'DELETE' }) } finally { sessionStorage.removeItem(tokenKey); localStorage.removeItem(tokenKey); setToken(null); setMe(null); setBrowserKeyUnlocked(false); await forgetProtocolWorker() } })
@@ -127,17 +136,20 @@ function App() {
   if (!isKnownPage(location.pathname)) return <NotFoundPage/>
 
   if (!token || !me) return <main className="auth-shell"><div className="brand"><Waves size={22}/><span>RemoteSync</span></div><AuthForm busy={busy} error={error} notice={notice} onAuthenticated={authenticated}/><label className="check-label keep-signed-in"><input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)}/>Keep me signed in on this browser</label><BuildFooter build={buildInfo}/></main>
+  if (me.state === 'pending' || me.state === 'suspended') return <main className="auth-shell"><div className="brand"><Waves size={22}/><span>RemoteSync</span></div><section className="auth-card"><div className="eyebrow">ACCOUNT ACCESS</div><h1>{me.state === 'pending' ? 'Awaiting approval' : 'Account suspended'}</h1><p className="muted">{me.state === 'pending' ? 'Your email and two-factor setup are complete. An administrator must approve this account before its data or sync services are available.' : 'This account is suspended. Account data and sync services are unavailable.'}</p><p className="muted">{me.email}</p>{me.state === 'pending'&&<p className="muted">This page checks for approval automatically.</p>}<button className="primary" onClick={()=>void signOut()}>Sign out</button></section><BuildFooter build={buildInfo}/></main>
 
-  return <div className="layout"><aside className="sidebar"><a className="brand" href="#home"><Waves size={22}/> RemoteSync</a><nav>{[['home',Activity,'Overview'],['devices',Users,'Devices'],['data',Database,'Your data'],['collections',Globe,'Collections'],['security',KeyRound,'Security'],...(['admin','owner'].includes(me.role) ? [['admin',Shield,'Administration'] as const] : [])].map(([id,Icon,label]) => <button key={id as string} className={page===id?'selected':''} onClick={()=>setPage(id as string)}><Icon size={17}/>{label as string}</button>)}</nav><div className="profile"><span className="avatar">{me.email[0].toUpperCase()}</span><span className="ellipsis">{me.email}</span><button title="Sign out" onClick={signOut}><LogOut size={17}/></button></div></aside><main className="content"><header><div><div className="eyebrow">ACCOUNT</div><h1>{page === 'home' ? 'Overview' : page === 'admin' ? 'Administration' : page === 'data' ? 'Your data' : page[0].toUpperCase()+page.slice(1)}</h1></div><span className={`pill ${me.state}`}>{me.state}</span></header>{error&&<div className="alert error">{error}</div>}{notice&&<div className="alert">{notice}</div>}{codes&&<RecoveryCodes codes={codes} onDone={()=>setCodes(null)}/>}{!codes&&page==='home'&&<Overview me={me} keyUnlocked={browserKeyUnlocked} onForget={forgetBrowserKey}/ >}{!codes&&page==='devices'&&<><Clients act={act} twofaMethod={me.twofaMethod}/><Tokens act={act} twofaMethod={me.twofaMethod}/></>}{!codes&&page==='data'&&<YourData act={act} usageBytes={me.usageBytes} quotaBytes={me.quotaBytes} email={me.email} twofaMethod={me.twofaMethod} unlocked={browserKeyUnlocked} onDeleted={()=>{sessionStorage.removeItem(tokenKey);localStorage.removeItem(tokenKey);setToken(null);setMe(null)}}/>}{!codes&&page==='collections'&&<Collections act={act}/>}{!codes&&page==='security'&&<><KeyUnlock act={act} unlocked={browserKeyUnlocked} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey}/><DeviceTransfer act={act} accountId={me.accountId} unlocked={browserKeyUnlocked} twofaMethod={me.twofaMethod} onReceived={()=>setBrowserKeyUnlocked(true)}/><ChosenPassphrase act={act} accountId={me.accountId} twofaMethod={me.twofaMethod} onSaved={()=>setNotice('Envelope saved. Remember this passphrase; it cannot be recovered.')}/><Security me={me} act={act} setNotice={setNotice} showCodes={setCodes} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey}/ ></>}{!codes&&page==='admin'&&<Admin act={act} available={me.adminAvailable} actorRole={me.role}/ >}{!codes&&page==='pair'&&<Pairing act={act} twofaMethod={me.twofaMethod}/>}<BuildFooter build={buildInfo}/></main></div>
+  return <div className="layout"><aside className="sidebar"><a className="brand" href="#home"><Waves size={22}/> RemoteSync</a><nav>{[['home',Activity,'Overview'],['devices',Users,'Devices'],['data',Database,'Your data'],['collections',Globe,'Collections'],['security',KeyRound,'Security'],...(['admin','owner'].includes(me.role) ? [['admin',Shield,'Administration'] as const] : [])].map(([id,Icon,label]) => <button key={id as string} className={page===id?'selected':''} onClick={()=>setPage(id as string)}><Icon size={17}/>{label as string}</button>)}</nav><div className="profile"><span className="avatar">{me.email[0].toUpperCase()}</span><span className="ellipsis">{me.email}</span><button title="Sign out" onClick={signOut}><LogOut size={17}/></button></div></aside><main className="content"><header><div><div className="eyebrow">ACCOUNT</div><h1>{page === 'home' ? 'Overview' : page === 'admin' ? 'Administration' : page === 'data' ? 'Your data' : page[0].toUpperCase()+page.slice(1)}</h1></div><span className={`pill ${me.state}`}>{me.state}</span></header>{error&&<div className="alert error">{error}</div>}{notice&&<div className="alert">{notice}</div>}{codes&&<RecoveryCodes codes={codes} onDone={()=>setCodes(null)}/>}{!codes&&page==='home'&&<Overview me={me} keyUnlocked={browserKeyUnlocked} onForget={forgetBrowserKey}/ >}{!codes&&page==='devices'&&<><Clients act={act} twofaMethod={me.twofaMethod}/><Tokens act={act} twofaMethod={me.twofaMethod}/></>}{!codes&&page==='data'&&<YourData act={act} usageBytes={me.usageBytes} quotaBytes={me.quotaBytes} email={me.email} twofaMethod={me.twofaMethod} unlocked={browserKeyUnlocked} onDeleted={()=>{sessionStorage.removeItem(tokenKey);localStorage.removeItem(tokenKey);setToken(null);setMe(null)}}/>}{!codes&&page==='collections'&&<Collections act={act}/>}{!codes&&page==='security'&&<><KeyUnlock act={act} unlocked={browserKeyUnlocked} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey}/><DeviceTransfer act={act} accountId={me.accountId} unlocked={browserKeyUnlocked} twofaMethod={me.twofaMethod} onReceived={()=>setBrowserKeyUnlocked(true)}/><ChosenPassphrase act={act} accountId={me.accountId} twofaMethod={me.twofaMethod} onSaved={()=>setNotice('Envelope saved. Remember this passphrase; it cannot be recovered.')}/><AccountSecurity email={me.email} twofaMethod={me.twofaMethod} act={act} onUpdated={async()=>setMe(await request<Me>('/me'))}/><Security me={me} act={act} setNotice={setNotice} showCodes={setCodes} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey}/ ></>}{!codes&&page==='admin'&&<Admin act={act} available={me.adminAvailable} actorRole={me.role}/ >}{!codes&&page==='pair'&&<Pairing act={act} twofaMethod={me.twofaMethod}/>}<BuildFooter build={buildInfo}/></main></div>
 }
 
 function AuthForm({busy,error,notice,onAuthenticated}:{busy:boolean,error:string,notice:string,onAuthenticated:(session:string,codes?:string[])=>void}) {
   const [mode,setMode]=useState<'login'|'signup'>('login')
-  const [step,setStep]=useState<'credentials'|'verify'|'enroll'|'totp-confirm'|'reset-password'|'reset-verify'>('credentials')
+  const [step,setStep]=useState<'credentials'|'waiting'|'verify'|'enroll'|'totp-confirm'|'reset-password'|'reset-verify'>('credentials')
   const [email,setEmail]=useState(''); const [password,setPassword]=useState(''); const [newPassword,setNewPassword]=useState(''); const [code,setCode]=useState('')
   const [method,setMethod]=useState('totp'); const [challenge,setChallenge]=useState(''); const [totpSecret,setTotpSecret]=useState('')
   const [methods,setMethods]=useState<string[]>(['totp','email','recovery'])
-  const [emailQueued,setEmailQueued]=useState(false)
+  const [emailQueued,setEmailQueued]=useState(false); const [formError,setFormError]=useState('')
+  const [verifyCooldown,setVerifyCooldown]=useState(0); const [codeCooldown,setCodeCooldown]=useState(0); const [sending,setSending]=useState(false)
+  const [submitting,setSubmitting]=useState(false); const [captchaKey,setCaptchaKey]=useState(0)
   useEffect(()=>{
     const hash=location.hash.slice(1)
     if(location.pathname==='/reset'&&hash){setStep('reset-password');return}
@@ -145,45 +157,72 @@ function AuthForm({busy,error,notice,onAuthenticated}:{busy:boolean,error:string
       request<Challenge>('/auth/verify',{method:'POST',body:JSON.stringify({token:hash})}).then(result=>{setChallenge(result.challenge);setStep('enroll');history.replaceState(null,'','/verify')}).catch(()=>{})
     }
   },[])
-  const submit=async(e:React.FormEvent)=>{
-    e.preventDefault()
-    if(step==='reset-password'){
-      const result=await request<Challenge>('/auth/reset/finish',{method:'POST',body:JSON.stringify({token:location.hash.slice(1),password:newPassword})})
-      setChallenge(result.challenge);setMethods(result.methods??['totp','email','recovery']);setMethod(result.methods?.[0]??'totp');setStep('reset-verify');history.replaceState(null,'',location.pathname);return
-    }
-    if(step==='reset-verify'){
-      const result=await request<{session:string}>('/auth/login/2fa',{method:'POST',body:JSON.stringify({challenge,method,code})})
-      onAuthenticated(result.session);return
-    }
-    if(step==='credentials'){
-      if(mode==='signup'){
-        const invite=location.pathname==='/invite'?location.hash.slice(1):undefined
-        const result=await request<Challenge|undefined>('/auth/signup',{method:'POST',body:JSON.stringify({email,password,message:'',...(invite?{inviteToken:invite}:{})})})
-        if(result?.challenge){setChallenge(result.challenge);setStep('enroll')}
-        else setEmailQueued(true)
-        return
+  useEffect(()=>{
+    if(verifyCooldown===0&&codeCooldown===0)return
+    const timer=window.setTimeout(()=>{setVerifyCooldown(value=>Math.max(0,value-1));setCodeCooldown(value=>Math.max(0,value-1))},1000)
+    return()=>window.clearTimeout(timer)
+  },[verifyCooldown,codeCooldown])
+  const submit=async(e:React.FormEvent<HTMLFormElement>)=>{
+    e.preventDefault();setFormError('')
+    if(submitting)return
+    setSubmitting(true)
+    try {
+      if(step==='reset-password'){
+        const result=await request<Challenge>('/auth/reset/finish',{method:'POST',body:JSON.stringify({token:location.hash.slice(1),password:newPassword})})
+        setChallenge(result.challenge);setMethods(result.methods??['totp','email','recovery']);setMethod(result.methods?.[0]??'totp');setStep('reset-verify');history.replaceState(null,'',location.pathname);return
       }
-      const result=await request<Challenge>('/auth/login',{method:'POST',body:JSON.stringify({email,password})})
-      setChallenge(result.challenge);setMethods(result.methods??['totp','email']);setMethod(result.methods?.[0]??'totp');setStep(result.next==='enroll'?'enroll':'verify');return
-    }
-    if(step==='verify'){
-      const result=await request<{session:string}>('/auth/login/2fa',{method:'POST',body:JSON.stringify({challenge,method,code})})
-      onAuthenticated(result.session);return
-    }
-    if(step==='enroll'){
-      if(method==='email') {await request('/auth/enroll/email',{method:'POST',body:JSON.stringify({challenge})});setStep('totp-confirm');setEmailQueued(true);return}
-      const setup=await request<{secret:string,uri:string}>('/auth/enroll/totp',{method:'POST',body:JSON.stringify({challenge})})
-      setTotpSecret(`${setup.secret}\n${setup.uri}`);setStep('totp-confirm');return
-    }
-    if(method==='email'){
-      const result=await request<{session:string,recoveryCodes:string[]}>('/auth/enroll/email/confirm',{method:'POST',body:JSON.stringify({challenge,code})})
-      onAuthenticated(result.session,result.recoveryCodes);return
-    }
-    const result=await request<{session:string,recoveryCodes:string[]}>('/auth/enroll/totp/confirm',{method:'POST',body:JSON.stringify({challenge,code})})
-    onAuthenticated(result.session,result.recoveryCodes)
+      if(step==='reset-verify'){
+        const result=await request<{session:string}>('/auth/login/2fa',{method:'POST',body:JSON.stringify({challenge,method,code})})
+        onAuthenticated(result.session);return
+      }
+      if(step==='credentials'){
+        const altcha=String(new FormData(e.currentTarget).get('altcha')??'')
+        if(!altcha)throw new Error('Complete the bot check before continuing.')
+        setCaptchaKey(value=>value+1)
+        if(mode==='signup'){
+          const invite=location.pathname==='/invite'?location.hash.slice(1):undefined
+          const result=await request<Challenge|undefined>('/auth/signup',{method:'POST',body:JSON.stringify({email,password,message:'',altcha,...(invite?{inviteToken:invite}:{})})})
+          if(result?.challenge){setChallenge(result.challenge);setStep('enroll')}
+          else setEmailQueued(true)
+          return
+        }
+        const result=await request<Challenge>('/auth/login',{method:'POST',body:JSON.stringify({email,password,altcha})})
+        setChallenge(result.challenge)
+        if(result.next==='verify-email'){setStep('waiting');setVerifyCooldown(30);return}
+        setMethods(result.methods??['totp','email']);setMethod(result.methods?.[0]??'totp');setStep(result.next==='enroll'?'enroll':'verify');return
+      }
+      if(step==='verify'){
+        const result=await request<{session:string}>('/auth/login/2fa',{method:'POST',body:JSON.stringify({challenge,method,code})})
+        onAuthenticated(result.session);return
+      }
+      if(step==='enroll'){
+        if(method==='email') {await request('/auth/enroll/email',{method:'POST',body:JSON.stringify({challenge})});setStep('totp-confirm');setEmailQueued(true);return}
+        const setup=await request<{secret:string,uri:string}>('/auth/enroll/totp',{method:'POST',body:JSON.stringify({challenge})})
+        setTotpSecret(`${setup.secret}\n${setup.uri}`);setStep('totp-confirm');return
+      }
+      if(method==='email'){
+        const result=await request<{session:string,recoveryCodes:string[]}>('/auth/enroll/email/confirm',{method:'POST',body:JSON.stringify({challenge,code})})
+        onAuthenticated(result.session,result.recoveryCodes);return
+      }
+      const result=await request<{session:string,recoveryCodes:string[]}>('/auth/enroll/totp/confirm',{method:'POST',body:JSON.stringify({challenge,code})})
+      onAuthenticated(result.session,result.recoveryCodes)
+    } catch (e) { setFormError((e as Error).message) }
+    finally { setSubmitting(false) }
   }
-  const title=step==='verify'||step==='reset-verify'?'Two-factor verification':step==='enroll'?'Set up two-factor authentication':step==='totp-confirm'?'Confirm your authenticator':step==='reset-password'?'Choose a new password':mode==='login'?'Sign in':'Create account'
-  return <section className="auth-card"><div className="eyebrow">ACCOUNT ACCESS</div><h1>{title}</h1><p className="muted">Your RemoteSync account is separate from your VRChat account.</p>{error&&<div className="alert error">{error}</div>}{notice&&<div className="alert">{notice}</div>}{emailQueued&&<div className="alert">Check your email for the next step. If you are setting up email 2FA, enter the code we sent.</div>}{step==='totp-confirm'&&totpSecret&&<div className="secret-box"><b>Authenticator setup key</b><pre>{totpSecret}</pre><small>Add this key to your authenticator app, then enter its current 6-digit code.</small></div>}<form onSubmit={submit}>{step==='credentials'&&<><label>Email<input autoComplete="email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Password<input autoComplete={mode==='login'?'current-password':'new-password'} type="password" minLength={12} required value={password} onChange={e=>setPassword(e.target.value)}/></label></>}{step==='reset-password'&&<label>New password<input autoComplete="new-password" type="password" minLength={12} required value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>}{(step==='verify'||step==='enroll'||step==='reset-verify')&&<label>{step==='enroll'?'Choose a two-factor method':'Verification method'}<select value={method} onChange={e=>setMethod(e.target.value)}>{(step==='enroll'?['totp','email']:methods).map(m=><option key={m} value={m}>{m==='totp'?'Authenticator app':m==='email'?'Email code':'Recovery code'}</option>)}</select></label>}{(step==='verify'||step==='reset-verify'||step==='totp-confirm')&&<label>{method==='recovery'?'Recovery code':method==='email'?'Email code':'6-digit authenticator code'}<input autoFocus required value={code} onChange={e=>setCode(e.target.value)}/></label>}{(step==='verify'||step==='reset-verify')&&method==='email'&&<button type="button" onClick={async()=>{await request('/auth/login/email-code',{method:'POST',body:JSON.stringify({challenge})});setEmailQueued(true)}}>Send code to email</button>}<button className="primary" disabled={busy}>{busy?'Please wait…':step==='credentials'?(mode==='login'?'Continue':'Create account'):step==='verify'||step==='reset-verify'?'Verify and sign in':step==='enroll'?'Continue':step==='reset-password'?'Set new password':'Confirm setup'}</button></form>{step==='credentials'&&<>{mode==='login'&&<button className="link" onClick={()=>{request('/auth/reset',{method:'POST',body:JSON.stringify({email})}).then(()=>setEmailQueued(true)).catch(()=>setEmailQueued(true))}}>Forgot password?</button>}<button className="link" onClick={()=>{setMode(mode==='login'?'signup':'login');setEmailQueued(false)}}>{mode==='login'?'Need an account? Sign up':'Already have an account? Sign in'}</button></>}{step!=='credentials'&&<button className="link" onClick={()=>{setStep('credentials');setCode('');setEmailQueued(false)}}>Back</button>}</section>
+  const resendVerification=async()=>{
+    setSending(true);setFormError('')
+    try {await request('/auth/verify/resend',{method:'POST',body:JSON.stringify({challenge})});setVerifyCooldown(30);setEmailQueued(true)}
+    catch(e){setFormError((e as Error).message)}
+    finally{setSending(false)}
+  }
+  const sendLoginCode=async()=>{
+    setSending(true);setFormError('')
+    try {await request('/auth/login/email-code',{method:'POST',body:JSON.stringify({challenge})});setCodeCooldown(30);setEmailQueued(true)}
+    catch(e){setFormError((e as Error).message)}
+    finally{setSending(false)}
+  }
+  const title=step==='waiting'?'Verify your email':step==='verify'||step==='reset-verify'?'Two-factor verification':step==='enroll'?'Set up two-factor authentication':step==='totp-confirm'?'Confirm your authenticator':step==='reset-password'?'Choose a new password':mode==='login'?'Sign in':'Create account'
+  return <section className="auth-card"><div className="eyebrow">ACCOUNT ACCESS</div><h1>{title}</h1>{step==='waiting'?<><p className="muted">This account has not verified its email address. Open the confirmation link sent to <strong>{email}</strong> to continue.</p>{(formError||error)&&<div className="alert error">{formError||error}</div>}<button className="primary" disabled={sending||verifyCooldown>0} onClick={()=>void resendVerification()}>{sending?'Sending…':verifyCooldown>0?`Resend email in ${verifyCooldown}s`:'Resend verification email'}</button><button className="link" onClick={()=>{setStep('credentials');setFormError('')}}>Back to sign in</button></>:<><p className="muted">Your RemoteSync account is separate from your VRChat account.</p>{(formError||error)&&<div className="alert error">{formError||error}</div>}{notice&&<div className="alert">{notice}</div>}{emailQueued&&<div className="alert">Check your email for the next step. If you are setting up email 2FA, enter the code we sent.</div>}{step==='totp-confirm'&&totpSecret&&<div className="secret-box"><b>Authenticator setup key</b><pre>{totpSecret}</pre><small>Add this key to your authenticator app, then enter its current 6-digit code.</small></div>}<form onSubmit={submit}>{step==='credentials'&&<><label>Email<input autoComplete="email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Password<input autoComplete={mode==='login'?'current-password':'new-password'} type="password" minLength={12} required value={password} onChange={e=>setPassword(e.target.value)}/></label><div key={captchaKey}><altcha-widget challenge="/auth/altcha/challenge" name="altcha"/></div></>}{step==='reset-password'&&<label>New password<input autoComplete="new-password" type="password" minLength={12} required value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></label>}{(step==='verify'||step==='enroll'||step==='reset-verify')&&<label>{step==='enroll'?'Choose a two-factor method':'Verification method'}<select value={method} onChange={e=>setMethod(e.target.value)}>{(step==='enroll'?['totp','email']:methods).map(m=><option key={m} value={m}>{m==='totp'?'Authenticator app':m==='email'?'Email code':'Recovery code'}</option>)}</select></label>}{(step==='verify'||step==='reset-verify'||step==='totp-confirm')&&<label>{method==='recovery'?'Recovery code':method==='email'?'Email code':'6-digit authenticator code'}<input autoFocus required value={code} onChange={e=>setCode(e.target.value)}/></label>}{(step==='verify'||step==='reset-verify')&&method==='email'&&<button type="button" disabled={sending||codeCooldown>0} onClick={()=>void sendLoginCode()}>{sending?'Sending…':codeCooldown>0?`Send code again in ${codeCooldown}s`:'Send code to email'}</button>}<button className="primary" disabled={busy||submitting}>{busy||submitting?'Please wait…':step==='credentials'?(mode==='login'?'Continue':'Create account'):step==='verify'||step==='reset-verify'?'Verify and sign in':step==='enroll'?'Continue':step==='reset-password'?'Set new password':'Confirm setup'}</button></form>{step==='credentials'&&<>{mode==='login'&&<button className="link" onClick={()=>{request('/auth/reset',{method:'POST',body:JSON.stringify({email})}).then(()=>setEmailQueued(true)).catch(()=>setEmailQueued(true))}}>Forgot password?</button>}<button className="link" onClick={()=>{setMode(mode==='login'?'signup':'login');setEmailQueued(false);setFormError('')}}>{mode==='login'?'Need an account? Sign up':'Already have an account? Sign in'}</button></>}{step!=='credentials'&&<button className="link" onClick={()=>{setStep('credentials');setCode('');setEmailQueued(false)}}>Back</button>}</>}</section>
 }
 
 function Overview({me,keyUnlocked,onForget}:{me:Me,keyUnlocked:boolean,onForget:()=>Promise<void>}) { const usage=me.usageBytes;const pct=me.quotaBytes?Math.min(100,usage/me.quotaBytes*100):0;return <>{me.recoveryCodesLeft<=2&&<div className="alert error">Only {me.recoveryCodesLeft} recovery codes remain. Generate a fresh set in Security.</div>}<div className="hero"><div><div className="eyebrow">REMOTE VIEWING</div><h2>Your account is ready</h2><p>RemoteSync keeps encrypted VRCX history available to your devices.</p></div><Activity size={48}/></div><div className="cards"><article className="card"><div className="card-title">Storage usage</div><strong>{formatBytes(usage)}</strong><div className="progress"><i style={{width:`${pct}%`}}/></div><small>{me.quotaBytes?`of ${formatBytes(me.quotaBytes)} limit`:'No storage limit'}</small></article><article className="card"><div className="card-title">RemoteSync access</div><strong>{me.syncAllowed?'Enabled':'Disabled'}</strong><small>{me.collectorAllowed?'Collector access is allowed':'Collector access is disabled'}</small></article><article className="card"><div className="card-title">Security</div><strong>{me.twofaMethod==='totp'?'Authenticator enabled':'2FA enabled'}</strong><small>{me.recoveryCodesLeft} recovery codes remaining</small></article></div>{keyUnlocked&&<div className="key-status">Sync key is unlocked in this tab's protocol Worker. <button onClick={()=>void onForget()}>Forget key</button></div>}<HistoryBrowser unlocked={keyUnlocked} accountId={me.accountId}/></>}

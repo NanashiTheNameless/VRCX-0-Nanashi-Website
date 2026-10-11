@@ -43,7 +43,7 @@ impl Mailer {
             to: [request.to.trim()],
             subject: &request.subject,
             text: &request.text,
-            html: request.html.as_deref(),
+            html: None,
         };
         let response = self
             .client

@@ -93,6 +93,75 @@ function useReauth(defaultMethod: string) {
   return { confirm, fields, ready: code.trim().length > 0 }
 }
 
+export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
+  email: string
+  twofaMethod: string | null
+  act: Act
+  onUpdated: () => Promise<void>
+}) {
+  const [method, setMethod] = useState(twofaMethod === 'email' ? 'email' : 'totp')
+  const [currentCode, setCurrentCode] = useState('')
+  const [currentEmailSent, setCurrentEmailSent] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; uri: string } | null>(null)
+  const [targetCode, setTargetCode] = useState('')
+  const [emailChangeSent, setEmailChangeSent] = useState(false)
+
+  const reauthenticate = async () => {
+    await request('/reauth', {
+      method: 'POST',
+      body: JSON.stringify({ method, code: currentCode }),
+    })
+    setCurrentCode('')
+  }
+
+  return <>
+    <section className="card wide">
+      <h2>Verify it's you</h2>
+      <p className="muted">Use this verification before changing account security settings.</p>
+      <label>Verification method<select value={method} onChange={event => { setMethod(event.target.value); setCurrentCode(''); setCurrentEmailSent(false) }}>
+        <option value="totp">Authenticator app</option><option value="email">Email code</option><option value="recovery">Recovery code</option>
+      </select></label>
+      {method === 'email' && <button type="button" onClick={() => act(async () => { await request('/reauth/email-code', { method: 'POST' }); setCurrentEmailSent(true) })}>{currentEmailSent ? 'Send another email code' : 'Send email code'}</button>}
+      <label>{method === 'totp' ? 'Authenticator code' : method === 'email' ? 'Email code' : 'Recovery code'}<input autoComplete={method === 'totp' ? 'one-time-code' : 'off'} value={currentCode} onChange={event => setCurrentCode(event.target.value)} /></label>
+    </section>
+    <section className="card wide">
+      <h2>Password</h2>
+      <p className="muted">Change your password after verifying your current account security method. Other website sessions will be ended.</p>
+      <label>New password<input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label>
+      <label>Confirm new password<input type="password" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} /></label>
+      <button className="primary" disabled={!currentCode || !newPassword || newPassword !== confirmPassword} onClick={() => act(async () => {
+        if (newPassword !== confirmPassword) throw new Error('The passwords do not match.')
+        await reauthenticate()
+        await request('/password', { method: 'PUT', body: JSON.stringify({ password: newPassword }) })
+        setNewPassword(''); setConfirmPassword(''); await onUpdated()
+      })}>Change password</button>
+    </section>
+    <section className="card wide">
+      <h2>Two-factor method</h2>
+      <p className="muted">Current method: {twofaMethod === 'totp' ? 'Authenticator app' : twofaMethod === 'email' ? 'Email code' : 'Not set'}. Verify your current method before switching.</p>
+      {twofaMethod !== 'totp' && !totpSetup && <button onClick={() => act(async () => {
+        await reauthenticate()
+        setTotpSetup(await request('/security/twofa/totp', { method: 'POST' }))
+      })}>Set up authenticator app</button>}
+      {totpSetup && <div className="secret-box"><b>Authenticator setup key</b><pre>{totpSetup.secret}{'\n'}{totpSetup.uri}</pre><small>Enter the current code from the authenticator app to confirm this method.</small><label>New authenticator code<input autoComplete="one-time-code" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+        await request('/security/twofa/totp/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
+        setTotpSetup(null); setTargetCode(''); await onUpdated()
+      })}>Confirm authenticator app</button></div>}
+      {twofaMethod !== 'email' && !emailChangeSent && <button onClick={() => act(async () => {
+        await reauthenticate()
+        await request('/security/twofa/email', { method: 'POST' })
+        setEmailChangeSent(true)
+      })}>Use email codes instead</button>}
+      {twofaMethod !== 'email' && emailChangeSent && <div className="secret-box"><p>A confirmation code was sent to {email}.</p><label>Email code<input autoComplete="one-time-code" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+        await request('/security/twofa/email/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
+        setEmailChangeSent(false); setTargetCode(''); await onUpdated()
+      })}>Confirm email codes</button></div>}
+    </section>
+  </>
+}
+
 export function Clients({ act, twofaMethod }: { act: Act; twofaMethod: string | null }) {
   const [clients, setClients] = useState<Client[]>([])
   const [open, setOpen] = useState<string | null>(null)

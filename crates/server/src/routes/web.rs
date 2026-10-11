@@ -1,7 +1,11 @@
+use altcha::{
+    CreateChallengeOptions, Payload, VerifySolutionOptions, create_challenge, verify_solution,
+};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use data_encoding::{BASE64, BASE64_NOPAD};
 use serde::{Deserialize, Serialize};
 use vrcx_0_nanashi_website_protocol::api::{ClientKind, ReauthMethod, Scope, codes};
 use vrcx_0_nanashi_website_protocol::b64;
@@ -34,7 +38,9 @@ const ALL_SCOPES: &[Scope] = &[Scope::Sync, Scope::Collector, Scope::Share, Scop
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/auth/signup", post(signup))
+        .route("/auth/altcha/challenge", get(altcha_challenge))
         .route("/auth/verify", post(verify))
+        .route("/auth/verify/resend", post(resend_verification))
         .route("/auth/enroll/totp", post(enroll_totp_start))
         .route("/auth/enroll/totp/confirm", post(enroll_totp_confirm))
         .route("/auth/enroll/email", post(enroll_email_start))
@@ -48,6 +54,10 @@ pub fn router() -> Router<Shared> {
         .route("/me", get(me))
         .route("/reauth", post(reauth))
         .route("/reauth/email-code", post(reauth_email_code))
+        .route("/security/twofa/totp", post(twofa_totp_start))
+        .route("/security/twofa/totp/confirm", post(twofa_totp_confirm))
+        .route("/security/twofa/email", post(twofa_email_start))
+        .route("/security/twofa/email/confirm", post(twofa_email_confirm))
         .route("/recovery-codes", post(regenerate_recovery_codes))
         .route("/password", put(change_password))
         .route("/account", delete(delete_account))
@@ -93,6 +103,75 @@ pub fn router() -> Router<Shared> {
         .route("/admin/audit", get(admin_audit))
         .merge(crate::routes::v1::shared_routes())
         .fallback(crate::routes::api_not_found)
+}
+
+async fn altcha_challenge(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+) -> ApiResult<Json<altcha::Challenge>> {
+    state.rate(
+        rate::ALTCHA_CHALLENGE_IP,
+        &ClientOrigin::from_headers(&headers).rate_key(),
+    )?;
+    state
+        .run(move |state| {
+            let secret = data_encoding::HEXLOWER
+                .encode(&state.keys.hmac("altcha-auth-v1", b"signup-and-login"));
+            let challenge = create_challenge(CreateChallengeOptions {
+                algorithm: "PBKDF2/SHA-256".to_owned(),
+                cost: 5_000,
+                data: Some(std::collections::BTreeMap::from([(
+                    "purpose".to_owned(),
+                    serde_json::Value::String("auth".to_owned()),
+                )])),
+                expires_at: Some(now_ms() / 1000 + 300),
+                hmac_signature_secret: Some(secret),
+                ..Default::default()
+            })
+            .map_err(|error| ApiErr::internal("altcha challenge", error))?;
+            Ok(Json(challenge))
+        })
+        .await
+}
+
+fn verify_auth_altcha(state: &AppState, encoded: &str) -> ApiResult<String> {
+    if encoded.len() > 16 * 1024 {
+        return Err(ApiErr::bad_request("The bot check response is too large."));
+    }
+    let decoded = BASE64
+        .decode(encoded.as_bytes())
+        .or_else(|_| BASE64_NOPAD.decode(encoded.as_bytes()))
+        .map_err(|_| ApiErr::bad_request("Complete the bot check and try again."))?;
+    let payload: Payload = serde_json::from_slice(&decoded)
+        .map_err(|_| ApiErr::bad_request("Complete the bot check and try again."))?;
+    if payload
+        .challenge
+        .parameters
+        .data
+        .as_ref()
+        .and_then(|data| data.get("purpose"))
+        .and_then(serde_json::Value::as_str)
+        != Some("auth")
+    {
+        return Err(ApiErr::bad_request("Complete the bot check and try again."));
+    }
+    let signature = payload
+        .challenge
+        .signature
+        .clone()
+        .ok_or_else(|| ApiErr::bad_request("Complete the bot check and try again."))?;
+    let secret =
+        data_encoding::HEXLOWER.encode(&state.keys.hmac("altcha-auth-v1", b"signup-and-login"));
+    let verified = verify_solution(VerifySolutionOptions::new(
+        &payload.challenge,
+        &payload.solution,
+        secret,
+    ))
+    .map_err(|_| ApiErr::bad_request("Complete the bot check and try again."))?;
+    if !verified.verified {
+        return Err(ApiErr::bad_request("Complete the bot check and try again."));
+    }
+    Ok(signature)
 }
 
 fn admin_gate(state: &AppState, auth: &WebAuth) -> ApiResult<()> {
@@ -872,7 +951,11 @@ pub(crate) async fn send_email_code(
     account: &AccountRow,
     purpose: &'static str,
 ) -> ApiResult<()> {
-    state.rate(rate::EMAIL_SEND, account.account_id.as_str())?;
+    if purpose == "login" {
+        state.rate(rate::LOGIN_EMAIL_CODE_SEND, account.account_id.as_str())?;
+    } else {
+        state.rate(rate::EMAIL_SEND, account.account_id.as_str())?;
+    }
     let code = email_code();
     let account_id = account.account_id.clone();
     let code_for_db = code.clone();
@@ -948,6 +1031,7 @@ fn normalize_email(email: &str) -> ApiResult<String> {
 struct SignupRequest {
     email: String,
     password: String,
+    altcha: String,
     #[serde(default)]
     message: String,
     #[serde(default)]
@@ -964,6 +1048,13 @@ async fn signup(
         rate::AUTH_START,
         &ClientOrigin::from_headers(&headers).rate_key(),
     )?;
+    let origin = ClientOrigin::from_headers(&headers).rate_key();
+    state
+        .limiter
+        .check(rate::SIGNUP_IP, &origin, now_ms())
+        .map_err(ApiErr::rate_limited)?;
+    let captcha_signature = verify_auth_altcha(&state, &request.altcha)?;
+    state.rate(rate::ALTCHA_USED, &format!("auth:{captcha_signature}"))?;
     let email = normalize_email(&request.email)?;
     passwords::check(&request.password).map_err(|p| ApiErr::bad_request(p.message()))?;
     if request.message.chars().count() > 2000 {
@@ -971,6 +1062,8 @@ async fn signup(
             "The message can be at most 2000 characters.",
         ));
     }
+    state.rate(rate::SIGNUP_IP, &origin)?;
+    state.rate(rate::SIGNUP_EMAIL, &email)?;
     let hash = passwords::hash(&request.password);
     let invite = request.invite_token.clone();
     let outcome = state
@@ -1103,6 +1196,41 @@ async fn verify(
             }))
         })
         .await
+}
+
+#[derive(Deserialize)]
+struct ResendVerificationRequest {
+    challenge: String,
+}
+
+async fn resend_verification(
+    State(state): State<Shared>,
+    Json(request): Json<ResendVerificationRequest>,
+) -> ApiResult<StatusCode> {
+    let challenge = request.challenge;
+    let account = state
+        .run(move |state| {
+            let (account, _) = check_token(state, &challenge, "verify-resend", 5)?;
+            if account.state != AccountState::Unverified {
+                return Err(ApiErr::bad_request("This account is already verified."));
+            }
+            Ok(account)
+        })
+        .await?;
+    state.rate(rate::VERIFY_RESEND, account.account_id.as_str())?;
+    let account_id = account.account_id.clone();
+    let token = state
+        .run(move |state| store_token(state, &account_id, "verify", LINK_TTL_MS, None))
+        .await?;
+    let link = web_link(&state, "verify", &token);
+    state
+        .send_email(
+            &account.email,
+            mail::verify_address(&link),
+            format!("verify-{token}"),
+        )
+        .await?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
@@ -1287,6 +1415,7 @@ async fn enroll_email_confirm(
 struct LoginRequest {
     email: String,
     password: String,
+    altcha: String,
 }
 
 fn methods_for(state: &AppState, account: &AccountRow) -> ApiResult<Option<Vec<&'static str>>> {
@@ -1310,8 +1439,20 @@ async fn login(
         rate::AUTH_START,
         &ClientOrigin::from_headers(&headers).rate_key(),
     )?;
+    let origin = ClientOrigin::from_headers(&headers).rate_key();
+    state.rate(rate::LOGIN_IP, &origin)?;
+    let captcha_signature = verify_auth_altcha(&state, &request.altcha)?;
+    state.rate(rate::ALTCHA_USED, &format!("auth:{captcha_signature}"))?;
     let email = request.email.trim().to_ascii_lowercase();
     state.rate(rate::LOGIN_EMAIL, &email)?;
+    state
+        .limiter
+        .check(rate::LOGIN_FAILURE_IP, &origin, now_ms())
+        .map_err(ApiErr::rate_limited)?;
+    state
+        .limiter
+        .check(rate::LOGIN_FAILURE_EMAIL, &email, now_ms())
+        .map_err(ApiErr::rate_limited)?;
     state
         .run(move |state| {
             let account = state.registry().account_by_email(&email)?;
@@ -1321,17 +1462,36 @@ async fn login(
             };
             let (Some(account), Some(stored)) = (account, stored) else {
                 passwords::verify_dummy(&request.password);
+                state
+                    .limiter
+                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_ms());
+                state
+                    .limiter
+                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_ms());
                 return Err(bad_credentials());
             };
             if !passwords::verify(&stored, &request.password) {
+                state
+                    .limiter
+                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_ms());
+                state
+                    .limiter
+                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_ms());
                 return Err(bad_credentials());
             }
             if account.state == AccountState::Unverified {
-                return Err(ApiErr::new(
-                    StatusCode::FORBIDDEN,
-                    "email_unverified",
-                    "Confirm your email address first. Sign up again to get a new link.",
-                ));
+                let challenge = store_token(
+                    state,
+                    &account.account_id,
+                    "verify-resend",
+                    CHALLENGE_TTL_MS,
+                    None,
+                )?;
+                return Ok(Json(ChallengeResponse {
+                    challenge,
+                    next: "verify-email",
+                    methods: Vec::new(),
+                }));
             }
             match methods_for(state, &account)? {
                 Some(methods) => {
@@ -1598,26 +1758,49 @@ struct Me {
 async fn me(State(state): State<Shared>, auth: WebAuth) -> ApiResult<Json<Me>> {
     state
         .run(move |state| {
+            let restricted = auth.account.state != AccountState::Active;
             let registry = state.registry();
             let method = registry
                 .twofa(&auth.account.account_id)?
                 .and_then(|(m, _, _)| m);
-            let left = registry.recovery_codes_left(&auth.account.account_id)?;
+            let left = if restricted {
+                0
+            } else {
+                registry.recovery_codes_left(&auth.account.account_id)?
+            };
             let account = &auth.account;
             Ok(Json(Me {
                 account_id: account.account_id.clone(),
                 email: account.email.clone(),
                 state: account.state.as_str(),
-                role: account.role.as_str(),
-                admin_available: account.role.can_administer() && method.as_deref() == Some("totp"),
+                role: if restricted {
+                    "user"
+                } else {
+                    account.role.as_str()
+                },
+                admin_available: !restricted
+                    && account.role.can_administer()
+                    && method.as_deref() == Some("totp"),
                 twofa_method: method,
                 recovery_codes_left: left,
-                usage_bytes: account.usage_bytes,
-                quota_bytes: account.effective_quota(),
-                sync_allowed: account.sync_allowed,
-                collector_allowed: account.effective_collector_allowed(),
-                recent_auth_until_ms: auth.token.recent_auth_until_ms,
-                recent_totp_until_ms: auth.token.recent_totp_until_ms,
+                usage_bytes: if restricted { 0 } else { account.usage_bytes },
+                quota_bytes: if restricted {
+                    None
+                } else {
+                    account.effective_quota()
+                },
+                sync_allowed: !restricted && account.sync_allowed,
+                collector_allowed: !restricted && account.effective_collector_allowed(),
+                recent_auth_until_ms: if restricted {
+                    0
+                } else {
+                    auth.token.recent_auth_until_ms
+                },
+                recent_totp_until_ms: if restricted {
+                    0
+                } else {
+                    auth.token.recent_totp_until_ms
+                },
             }))
         })
         .await
@@ -1662,6 +1845,92 @@ async fn reauth(
 async fn reauth_email_code(State(state): State<Shared>, auth: WebAuth) -> ApiResult<StatusCode> {
     send_email_code(&state, &auth.account, "reauth").await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn twofa_totp_start(
+    State(state): State<Shared>,
+    auth: WebAuth,
+) -> ApiResult<Json<TotpSetup>> {
+    auth.require_recent_auth()?;
+    state
+        .run(move |state| Ok(Json(start_totp(state, &auth.account)?)))
+        .await
+}
+
+#[derive(Deserialize)]
+struct CodeRequest {
+    code: String,
+}
+
+async fn twofa_totp_confirm(
+    State(state): State<Shared>,
+    auth: WebAuth,
+    Json(request): Json<CodeRequest>,
+) -> ApiResult<StatusCode> {
+    auth.require_recent_auth()?;
+    let email = auth.account.email.clone();
+    state
+        .run(move |state| {
+            if !confirm_totp(state, &auth.account, &request.code)? {
+                return Err(wrong_code());
+            }
+            state.registry().audit(
+                &auth.token.token_id,
+                "twofa-change",
+                Some(&auth.account.account_id),
+                now_ms(),
+            )?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await?;
+    state.send_email_later(
+        email,
+        mail::notice(
+            "Your authenticator method was changed",
+            "An authenticator app was set as the two-factor method for your account.",
+        ),
+        format!("twofa-{}", new_secret()),
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn twofa_email_start(State(state): State<Shared>, auth: WebAuth) -> ApiResult<StatusCode> {
+    auth.require_recent_auth()?;
+    send_email_code(&state, &auth.account, "change-twofa").await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn twofa_email_confirm(
+    State(state): State<Shared>,
+    auth: WebAuth,
+    Json(request): Json<CodeRequest>,
+) -> ApiResult<StatusCode> {
+    auth.require_recent_auth()?;
+    let email = auth.account.email.clone();
+    state
+        .run(move |state| {
+            if !check_email_code(state, &auth.account, "change-twofa", &request.code)? {
+                return Err(wrong_code());
+            }
+            state.registry().set_twofa_email(&auth.account.account_id)?;
+            state.registry().audit(
+                &auth.token.token_id,
+                "twofa-change",
+                Some(&auth.account.account_id),
+                now_ms(),
+            )?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await?;
+    state.send_email_later(
+        email,
+        mail::notice(
+            "Your authenticator method was changed",
+            "Email codes were set as the two-factor method for your account.",
+        ),
+        format!("twofa-{}", new_secret()),
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]

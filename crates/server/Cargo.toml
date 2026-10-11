@@ -12,6 +12,7 @@ name = "remotesync"
 path = "src/main.rs"
 
 [dependencies]
+altcha = "1.0.0"
 argon2 = "0.6.0"
 axum = "0.8.9"
 chacha20poly1305 = "0.11.0"

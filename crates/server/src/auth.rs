@@ -171,9 +171,16 @@ impl FromRequestParts<Shared> for WebAuth {
         parts: &mut Parts,
         state: &Shared,
     ) -> Result<Self, Self::Rejection> {
-        authenticate(parts, state, TokenKind::Session)
-            .await
-            .map(WebAuth)
+        let path = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map(|uri| uri.0.path().to_owned())
+            .unwrap_or_else(|| parts.uri.path().to_owned());
+        let auth = authenticate(parts, state, TokenKind::Session).await?;
+        if !matches!(path.as_str(), "/web/v1/me" | "/web/v1/session") {
+            auth.require_active()?;
+        }
+        Ok(WebAuth(auth))
     }
 }
 

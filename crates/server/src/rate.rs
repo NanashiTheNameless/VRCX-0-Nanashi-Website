@@ -32,6 +32,51 @@ pub const AUTH_FAILURES_TOKEN: Rule = Rule {
     per_second: 1.0 / 60.0,
 };
 pub const AUTH_START: Rule = Rule::per_minute("auth-start", 20);
+pub const SIGNUP_IP: Rule = Rule {
+    name: "signup-ip",
+    capacity: 5.0,
+    per_second: 1.0 / 3600.0,
+};
+pub const SIGNUP_EMAIL: Rule = Rule {
+    name: "signup-email",
+    capacity: 3.0,
+    per_second: 1.0 / 86_400.0,
+};
+pub const LOGIN_IP: Rule = Rule {
+    name: "login-ip",
+    capacity: 30.0,
+    per_second: 1.0 / 60.0,
+};
+pub const LOGIN_FAILURE_IP: Rule = Rule {
+    name: "login-failure-ip",
+    capacity: 10.0,
+    per_second: 1.0 / 300.0,
+};
+pub const LOGIN_FAILURE_EMAIL: Rule = Rule {
+    name: "login-failure-email",
+    capacity: 8.0,
+    per_second: 1.0 / 900.0,
+};
+pub const ALTCHA_CHALLENGE_IP: Rule = Rule {
+    name: "altcha-challenge-ip",
+    capacity: 30.0,
+    per_second: 1.0 / 10.0,
+};
+pub const ALTCHA_USED: Rule = Rule {
+    name: "altcha-used",
+    capacity: 1.0,
+    per_second: 0.0,
+};
+pub const LOGIN_EMAIL_CODE_SEND: Rule = Rule {
+    name: "login-email-code-send",
+    capacity: 1.0,
+    per_second: 1.0 / 30.0,
+};
+pub const VERIFY_RESEND: Rule = Rule {
+    name: "verify-resend",
+    capacity: 1.0,
+    per_second: 1.0 / 30.0,
+};
 pub const LOGIN_EMAIL: Rule = Rule {
     name: "login-email",
     capacity: 10.0,

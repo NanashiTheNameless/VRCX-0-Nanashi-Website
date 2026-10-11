@@ -818,7 +818,8 @@ impl Registry {
 
     pub fn set_twofa_email(&self, account_id: &AccountId) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE accounts SET twofa_method = 'email', totp_secret_wrapped = NULL WHERE account_id = ?1",
+            "UPDATE accounts SET twofa_method = 'email', totp_secret_wrapped = NULL,
+                                 totp_pending_wrapped = NULL WHERE account_id = ?1",
             [account_id.as_str()],
         )?;
         Ok(())
