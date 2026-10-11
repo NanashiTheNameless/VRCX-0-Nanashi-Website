@@ -119,7 +119,7 @@ async fn altcha_challenge(
                 .encode(&state.keys.hmac("altcha-auth-v1", b"signup-and-login"));
             let challenge = create_challenge(CreateChallengeOptions {
                 algorithm: "PBKDF2/SHA-256".to_owned(),
-                cost: 5_000,
+                cost: if cfg!(test) { 1 } else { 5_000 },
                 data: Some(std::collections::BTreeMap::from([(
                     "purpose".to_owned(),
                     serde_json::Value::String("auth".to_owned()),

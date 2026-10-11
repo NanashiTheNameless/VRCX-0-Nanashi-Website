@@ -1260,6 +1260,12 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
     (body["session"].as_str().unwrap().to_owned(), secret, codes)
 }
 
+async fn approve_session(h: &Harness, session: &str) {
+    let me = h.get("/web/v1/me", Some(session)).await.json();
+    let account: AccountId = me["accountId"].as_str().unwrap().parse().unwrap();
+    h.state.approve_account(&account, "test").unwrap();
+}
+
 #[tokio::test]
 async fn signup_verify_enroll_and_approval() {
     let h = Harness::with_registration(None, Registration::Request);
@@ -1267,7 +1273,10 @@ async fn signup_verify_enroll_and_approval() {
     let me = h.get("/web/v1/me", Some(&session)).await.json();
     assert_eq!(me["state"], "pending");
     assert_eq!(me["twofaMethod"], "totp");
-    assert_eq!(me["recoveryCodesLeft"], 10);
+    assert_eq!(
+        me["recoveryCodesLeft"], 0,
+        "pending accounts cannot access account data"
+    );
     let account: AccountId = me["accountId"].as_str().unwrap().parse().unwrap();
     assert_eq!(
         h.state
@@ -1291,6 +1300,10 @@ async fn signup_verify_enroll_and_approval() {
     assert_eq!(
         h.get("/web/v1/me", Some(&session)).await.json()["state"],
         "active"
+    );
+    assert_eq!(
+        h.get("/web/v1/me", Some(&session)).await.json()["recoveryCodesLeft"],
+        10
     );
 }
 
@@ -1388,7 +1401,8 @@ async fn sign_in_with_totp_and_generic_errors() {
 #[tokio::test]
 async fn sign_in_with_recovery_code_emails_a_notice() {
     let h = Harness::with_registration(None, Registration::Request);
-    let (_, _, codes) = sign_up_with_totp(&h, "me@example.com").await;
+    let (signup_session, _, codes) = sign_up_with_totp(&h, "me@example.com").await;
+    approve_session(&h, &signup_session).await;
     let reply = h
         .post_json(
             "/web/v1/auth/login",
@@ -1501,6 +1515,7 @@ async fn email_two_factor_enrollment_and_sign_in() {
 async fn password_reset_requires_second_factor_and_ends_sessions() {
     let h = Harness::with_registration(None, Registration::Request);
     let (old_session, _, codes) = sign_up_with_totp(&h, "reset@example.com").await;
+    approve_session(&h, &old_session).await;
     assert_eq!(
         h.post_json(
             "/web/v1/auth/reset",
@@ -1577,6 +1592,11 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
 async fn reauth_regenerates_recovery_codes_and_sign_out() {
     let h = Harness::with_registration(None, Registration::Request);
     let (session, _, codes) = sign_up_with_totp(&h, "me@example.com").await;
+    let reply = h
+        .post_json("/web/v1/recovery-codes", Some(&session), json!({}))
+        .await;
+    assert_eq!(reply.code(), "account_not_active");
+    approve_session(&h, &session).await;
     let reply = h
         .post_json("/web/v1/recovery-codes", Some(&session), json!({}))
         .await;
