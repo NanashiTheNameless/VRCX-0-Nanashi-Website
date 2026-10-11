@@ -46,7 +46,7 @@ jobs:
           : > release-assets/digests.txt
           for component in api mailer blobstore web collector; do
             image="ghcr.io/nanashithenameless/vrcx-0-nanashi-website-${component}:latest"
-            digest="$(docker buildx imagetools inspect "$image" --format '{{.Digest}}')"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -er '.digest | strings | select(test("^sha256:[0-9a-f]{64}$"))')"
             test "${digest#sha256:}" != "$digest"
             printf '%s %s\n' "$image" "$digest" >> release-assets/digests.txt
           done
