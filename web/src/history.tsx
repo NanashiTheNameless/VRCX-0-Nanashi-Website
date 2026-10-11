@@ -63,6 +63,7 @@ export function HistoryBrowser({ unlocked, accountId }: { unlocked: boolean; acc
   const [detailEntity, setDetailEntity] = useState<{ id: string; kind: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   useEffect(() => {
     let active = true
@@ -86,7 +87,7 @@ export function HistoryBrowser({ unlocked, accountId }: { unlocked: boolean; acc
 
   const openNext = async () => {
     if (!vaultId || !unlocked) return
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setNotice('')
     try {
       let currentManifest = manifest
       if (!currentManifest) {
@@ -154,11 +155,12 @@ export function HistoryBrowser({ unlocked, accountId }: { unlocked: boolean; acc
   }, [chunks])
   const relatedRows = useMemo(() => detailEntity ? chunks.flatMap(chunk => Object.entries(chunk.body.streams).flatMap(([stream, values]) => values.filter(value => JSON.stringify(value).includes(detailEntity.id)).map(value => ({ stream, value })))) : [], [chunks, detailEntity])
 
-  return <section className="card wide history-browser"><div className="section-heading"><div><h2>Encrypted history</h2><p className="muted">Vault manifests and chunks are verified and decrypted locally in a dedicated Worker. The browser sends no history content to the server.</p></div><Activity size={22}/></div>
-    {!unlocked ? <div className="empty-state">Unlock a passphrase or passkey envelope in Security to view history.</div> : <>
+  return <section className="card wide history-browser"><div className="section-heading"><div><h2>Encrypted history</h2><p className="muted">Vault manifests and chunks are verified and decrypted locally in a dedicated Worker. The browser sends no history content to the server.</p></div><Activity size={22} aria-hidden="true"/></div>
+    {!unlocked ? <div className="empty-state">Your history is encrypted. Unlock your key under <a href="#security">Security</a> to read it here.</div> : <>
       {error && <div className="alert error">{error}</div>}
-      <div className="history-controls"><label>Vault<select value={vaultId} onChange={event => {const selected=vaults.find(vault=>vault.vaultId===event.target.value);setVaultId(event.target.value);setManifest(null);setChunks([]);setBefore(selected?selected.maxSeq+1:0);setHasMore(false)}}>{vaults.map(vault => <option key={vault.vaultId} value={vault.vaultId}>{vault.vaultId} · {vault.maxSeq} chunks</option>)}</select></label><button disabled={!vaultId||busy} onClick={openNext}>{busy?'Verifying…':chunks.length?'Load earlier history':'Verify and open recent history'}</button><button disabled={busy} onClick={async()=>{await clearHistoryCache(accountId);setError('Local encrypted history cache cleared.')}}>Clear local cache</button></div>
-      {vaultId&&<LivePanel vaultId={vaultId} accountId={accountId}/>}
+      {notice && <div className="alert">{notice}</div>}
+      {vaults.length>0&&<div className="history-controls"><label>Vault<select value={vaultId} onChange={event => {const selected=vaults.find(vault=>vault.vaultId===event.target.value);setVaultId(event.target.value);setManifest(null);setChunks([]);setBefore(selected?selected.maxSeq+1:0);setHasMore(false)}}>{vaults.map(vault => <option key={vault.vaultId} value={vault.vaultId}>{vault.vaultId} · {vault.maxSeq} chunks</option>)}</select></label><button disabled={!vaultId||busy} onClick={openNext}>{busy?'Verifying...':chunks.length?'Load earlier history':'Verify and open recent history'}</button><button disabled={busy} onClick={async()=>{await clearHistoryCache(accountId);setError('');setNotice('Local encrypted history cache cleared.')}}>Clear local cache</button></div>}
+      {vaults.length>0&&vaultId&&<LivePanel vaultId={vaultId} accountId={accountId}/>}
       {!vaults.length && !error && <div className="empty-state">No synced vaults were found for this account.</div>}
       {chunks.length > 0 && <><p className="muted">Verified {chunks.length} chunks · {summaries.total} rows · {summaries.worlds} locations · {summaries.people} people</p><div className="history-view-tabs" role="tablist" aria-label="History views">{historyViews.map(item=><button key={item.id} role="tab" aria-selected={view===item.id} className={view===item.id?'selected':''} onClick={()=>{setView(item.id);setStreamFilter('')}}>{item.label}</button>)}</div>{view==='all'&&<div className="history-summary-grid">{[...summaries.counts].sort(([a],[b])=>a.localeCompare(b)).map(([stream,count])=><button key={stream} className="history-summary-card" onClick={()=>{setView(viewForStream(stream));setStreamFilter(stream)}}><strong>{count}</strong><span>{stream.replaceAll('_',' ')}</span></button>)}</div>}<div className="history-filters"><label>Search loaded rows<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search names, locations, or text"/></label><label>Stream<select value={streamFilter} onChange={event=>setStreamFilter(event.target.value)}><option value="">All streams</option>{streams.filter(stream=>view==='all'||viewForStream(stream)===view).map(stream=><option key={stream}>{stream}</option>)}</select></label><label>From<input type="date" value={fromDate} onChange={event=>setFromDate(event.target.value)}/></label><label>Through<input type="date" value={throughDate} onChange={event=>setThroughDate(event.target.value)}/></label></div>{detailEntity&&<section className="entity-detail"><div className="section-heading"><div><h3>{detailEntity.kind} details</h3><p className="muted">{detailEntity.id} · {relatedRows.length} related verified records loaded</p></div><button onClick={()=>setDetailEntity(null)}>Close</button></div>{relatedRows.length?relatedRows.map((item,index)=><article key={`${item.stream}-${index}`}><strong>{item.stream.replaceAll('_',' ')}</strong><RecordDetails value={item.value} onSelect={setDetailEntity}/></article>):<p className="muted">No related records in the loaded history pages.</p>}</section>}{view==='graph'&&<MutualGraph rows={rows.map(row=>row.value)}/ >}{rows.length ? <div className="activity-timeline">{rows.map((row, index)=><article className="activity-entry" key={`${row.chunk.header.chunkId}-${row.stream}-${row.index}-${index}`}><div className="activity-entry-meta"><span>{historyViews.find(item=>item.id===viewForStream(row.stream))?.label} · {row.stream}</span><time><Clock3 size={13}/>{new Date(row.time).toLocaleString()}</time></div><ActivityRow stream={row.stream} value={row.value}/><details><summary><ChevronDown size={14}/>Record details</summary><RecordDetails value={row.value} onSelect={setDetailEntity}/></details></article>)}</div> : <div className="empty-state">No loaded events match these filters.</div>}</>}
       {hasMore&&<button disabled={busy} onClick={openNext}>Load earlier history</button>}
@@ -170,7 +172,7 @@ type LiveData = { own: { status: string; statusDescription: string; location: st
 
 function LivePanel({ vaultId, accountId }: { vaultId: string; accountId: string }) {
   const [live, setLive] = useState<LiveData | null>(null)
-  const [message, setMessage] = useState('Loading live presence…')
+  const [message, setMessage] = useState('Loading live presence...')
   const [age, setAge] = useState(0)
   useEffect(() => {
     let active = true
@@ -261,10 +263,10 @@ function MutualGraph({ rows }: { rows: unknown[] }) {
     const user = String(row.user_id ?? row.userId ?? row.friend_id ?? row.friendId ?? '')
     const other = String(row.friend_user_id ?? row.friendUserId ?? row.other_user_id ?? row.otherUserId ?? '')
     if (user) users.add(user)
-    if (other) { users.add(other); links.add([user,other].sort().join(' ↔ ')) }
+    if (other) { users.add(other); links.add([user,other].sort().join(' ')) }
   }
   const nodes=[...users].sort()
   const points=new Map(nodes.map((user,index)=>{const angle=(2*Math.PI*index/Math.max(nodes.length,1))-(Math.PI/2);return[user,{x:300+Math.cos(angle)*135,y:180+Math.sin(angle)*135}] as const}))
-  const pairs=[...links].map(link=>link.split(' ↔ '))
+  const pairs=[...links].map(link=>link.split(' '))
   return <div className="history-graph-summary"><strong>{users.size} people · {links.size} known links</strong><p className="muted">The graph is built only from mutual friend rows present in the loaded, verified chunks.</p>{nodes.length?<svg className="mutual-graph" viewBox="0 0 600 360" role="img" aria-label={`Mutual friends graph with ${nodes.length} people and ${links.size} links`}>{pairs.map(([a,b])=>{const p=points.get(a),q=points.get(b);return p&&q?<line key={`${a}-${b}`} x1={p.x} y1={p.y} x2={q.x} y2={q.y}/>:null})}{nodes.map(user=>{const p=points.get(user)!;return <g key={user}><circle cx={p.x} cy={p.y} r="8"/><text x={p.x} y={p.y+24} textAnchor="middle">{user}</text></g>})}</svg>:<div className="empty-state">No mutual friend relationships were included in the loaded history.</div>}</div>
 }

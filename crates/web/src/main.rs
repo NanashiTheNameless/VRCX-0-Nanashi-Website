@@ -343,20 +343,7 @@ fn make_response(app: &App, path: &str, bytes: Vec<u8>) -> Response {
     );
     headers.insert("permissions-policy", HeaderValue::from_static("accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), publickey-credentials-get=(self), publickey-credentials-create=(self)"));
     headers.insert("content-security-policy", app.csp.clone());
-    let cache = if path.contains('.')
-        && path != "index.html"
-        && path != "/index.html"
-        && path != "config.json"
-        && path != "/config.json"
-        && path != "build.json"
-        && path != "/build.json"
-        && path != "web-manifest.json"
-        && path != "/web-manifest.json"
-        && path != "web-manifest.sig"
-        && path != "/web-manifest.sig"
-        && path != "instance.json"
-        && path != "instance.sig"
-    {
+    let cache = if path.trim_start_matches('/').starts_with("assets/") {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
-import { apiFetch, request } from './api'
+import React, { useEffect, useState } from 'react'
+import { apiFetch, failure, request } from './api'
 import { createPassphraseEnvelope, normalizeSyncKey } from './envelopes'
+import { useReauth } from './reauth'
+import { formatBytes } from './site'
 import { manifestInfo, manifestRetention, transferCode, transferParse, transferReceive, transferSend, transferStart, type ManifestInfo } from './protocol'
 
 type Act = (work: () => Promise<void>) => Promise<void>
@@ -50,47 +52,16 @@ const WARN_BELOW_LOG10 = 80 * Math.log10(2)
 const when = (value: number | null) => (value ? new Date(value).toLocaleString() : 'Never')
 const place = (location: Location) => [location.city, location.region, location.country].filter(Boolean).join(', ') || 'Unknown location'
 
-export function formatBytes(value: number) {
-  if (value < 1024) return `${value} B`
-  const units = ['KiB', 'MiB', 'GiB', 'TiB']
-  let index = -1
-  do {
-    value /= 1024
-    index++
-  } while (value >= 1024 && index < units.length - 1)
-  return `${value.toFixed(1)} ${units[index]}`
-}
-
-function useReauth(defaultMethod: string) {
-  const [method, setMethod] = useState(defaultMethod === 'email' ? 'email' : 'totp')
-  const [code, setCode] = useState('')
-  const [sent, setSent] = useState(false)
-  const confirm = async () => {
-    await request('/reauth', { method: 'POST', body: JSON.stringify({ method, code }) })
-    setCode('')
-  }
-  const fields = (
-    <div className="reauth">
-      <label>
-        Verification method
-        <select value={method} onChange={event => { setMethod(event.target.value); setCode(''); setSent(false) }}>
-          <option value="totp">Authenticator app</option>
-          <option value="email">Email code</option>
-          <option value="recovery">Recovery code</option>
-        </select>
-      </label>
-      {method === 'email' && (
-        <button type="button" onClick={() => request('/reauth/email-code', { method: 'POST' }).then(() => setSent(true))}>
-          {sent ? 'Send another email code' : 'Send email code'}
-        </button>
-      )}
-      <label>
-        {method === 'totp' ? 'Authenticator code' : method === 'email' ? 'Email verification code' : 'Recovery code'}
-        <input autoComplete={method === 'totp' ? 'one-time-code' : 'off'} value={code} onChange={event => setCode(event.target.value)} />
-      </label>
+export function TotpSetup({ secret, uri, children }: { secret: string; uri: string; children?: React.ReactNode }) {
+  return (
+    <div className="secret-box">
+      <b>Authenticator setup key</b>
+      <code className="secret-code">{secret}</code>
+      {uri.startsWith('otpauth://') && <p><a href={uri}>Open in an authenticator app on this device</a></p>}
+      <small>Add this key to your authenticator app, then enter the 6-digit code it shows.</small>
+      {children}
     </div>
   )
-  return { confirm, fields, ready: code.trim().length > 0 }
 }
 
 export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
@@ -99,66 +70,52 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
   act: Act
   onUpdated: () => Promise<void>
 }) {
-  const [method, setMethod] = useState(twofaMethod === 'email' ? 'email' : 'totp')
-  const [currentCode, setCurrentCode] = useState('')
-  const [currentEmailSent, setCurrentEmailSent] = useState(false)
+  const reauth = useReauth(twofaMethod)
   const [newPassword, setNewPassword] = useState('')
+  const [passwordChanged, setPasswordChanged] = useState(false)
   const [confirmPassword, setConfirmPassword] = useState('')
   const [totpSetup, setTotpSetup] = useState<{ secret: string; uri: string } | null>(null)
   const [targetCode, setTargetCode] = useState('')
   const [emailChangeSent, setEmailChangeSent] = useState(false)
 
-  const reauthenticate = async () => {
-    if (!currentCode.trim()) throw new Error('Enter the current verification code first.')
-    if (method === 'email' && !currentEmailSent) {
-      throw new Error('Send an email verification code first, then enter it here.')
-    }
-    await request('/reauth', {
-      method: 'POST',
-      body: JSON.stringify({ method, code: currentCode }),
-    })
-    setCurrentCode('')
-  }
-
   return <>
     <section className="card wide">
       <h2>Verify it's you</h2>
-      <p className="muted">Use this verification before changing account security settings.</p>
-      <label>Verification method<select value={method} onChange={event => { setMethod(event.target.value); setCurrentCode(''); setCurrentEmailSent(false) }}>
-        <option value="totp">Authenticator app</option><option value="email">Email code</option><option value="recovery">Recovery code</option>
-      </select></label>
-      {method === 'email' && <button type="button" onClick={() => act(async () => { await request('/reauth/email-code', { method: 'POST' }); setCurrentEmailSent(true) })}>{currentEmailSent ? 'Send another email code' : 'Send email code'}</button>}
-      <label>{method === 'totp' ? 'Authenticator code' : method === 'email' ? 'Email code' : 'Recovery code'}<input autoComplete={method === 'totp' ? 'one-time-code' : 'off'} value={currentCode} onChange={event => setCurrentCode(event.target.value)} /></label>
+      <p className="muted">Enter a verification code once to unlock changes on this page. It stays valid for a few minutes.</p>
+      {reauth.fields}
     </section>
     <section className="card wide">
       <h2>Password</h2>
       <p className="muted">Change your password after verifying your current account security method. Other website sessions will be ended.</p>
-      <label>New password<input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label>
+      <label>New password<input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={event => { setNewPassword(event.target.value); setPasswordChanged(false) }} /></label>
       <label>Confirm new password<input type="password" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} /></label>
-      <button className="primary" disabled={!currentCode || !newPassword || newPassword !== confirmPassword} onClick={() => act(async () => {
+      <button className="primary" disabled={!reauth.ready || newPassword.length < 12 || newPassword !== confirmPassword} onClick={() => act(async () => {
         if (newPassword !== confirmPassword) throw new Error('The passwords do not match.')
-        await reauthenticate()
+        await reauth.confirm()
         await request('/password', { method: 'PUT', body: JSON.stringify({ password: newPassword }) })
-        setNewPassword(''); setConfirmPassword(''); await onUpdated()
+        setNewPassword(''); setConfirmPassword(''); setPasswordChanged(true); await onUpdated()
       })}>Change password</button>
+      {newPassword && newPassword.length < 12 && <small>Use at least 12 characters.</small>}
+      {confirmPassword && newPassword !== confirmPassword && <small>The passwords do not match.</small>}
+      {passwordChanged && <div className="alert">Password changed.</div>}
     </section>
     <section className="card wide">
       <h2>Two-factor method</h2>
       <p className="muted">Current method: {twofaMethod === 'totp' ? 'Authenticator app' : twofaMethod === 'email' ? 'Email code' : 'Not set'}. Verify your current method before switching.</p>
-      {twofaMethod !== 'totp' && !totpSetup && <button disabled={!currentCode.trim() || (method === 'email' && !currentEmailSent)} onClick={() => act(async () => {
-        await reauthenticate()
+      {twofaMethod !== 'totp' && !totpSetup && <button disabled={!reauth.ready} onClick={() => act(async () => {
+        await reauth.confirm()
         setTotpSetup(await request('/security/twofa/totp', { method: 'POST' }))
       })}>Set up authenticator app</button>}
-      {totpSetup && <div className="secret-box"><b>Authenticator setup key</b><pre>{totpSetup.secret}{'\n'}{totpSetup.uri}</pre><small>Enter the current code from the authenticator app to confirm this method.</small><label>New authenticator code<input autoComplete="one-time-code" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+      {totpSetup && <TotpSetup secret={totpSetup.secret} uri={totpSetup.uri}><label>New authenticator code<input autoComplete="one-time-code" inputMode="numeric" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
         await request('/security/twofa/totp/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
         setTotpSetup(null); setTargetCode(''); await onUpdated()
-      })}>Confirm authenticator app</button></div>}
-      {twofaMethod !== 'email' && !emailChangeSent && <button onClick={() => act(async () => {
-        await reauthenticate()
+      })}>Confirm authenticator app</button></TotpSetup>}
+      {twofaMethod !== 'email' && !emailChangeSent && <button disabled={!reauth.ready} onClick={() => act(async () => {
+        await reauth.confirm()
         await request('/security/twofa/email', { method: 'POST' })
         setEmailChangeSent(true)
       })}>Use email codes instead</button>}
-      {twofaMethod !== 'email' && emailChangeSent && <div className="secret-box"><p>A confirmation code was sent to {email}.</p><label>Email code<input autoComplete="one-time-code" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+      {twofaMethod !== 'email' && emailChangeSent && <div className="secret-box"><p>A confirmation code was sent to {email}.</p><label>Email code<input autoComplete="one-time-code" inputMode="numeric" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
         await request('/security/twofa/email/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
         setEmailChangeSent(false); setTargetCode(''); await onUpdated()
       })}>Confirm email codes</button></div>}
@@ -169,7 +126,7 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
 export function Clients({ act, twofaMethod }: { act: Act; twofaMethod: string | null }) {
   const [clients, setClients] = useState<Client[]>([])
   const [open, setOpen] = useState<string | null>(null)
-  const reauth = useReauth(twofaMethod ?? 'totp')
+  const reauth = useReauth(twofaMethod)
   const refresh = async () => setClients(await request<Client[]>('/account/clients?history=true'))
   useEffect(() => { refresh().catch(() => setClients([])) }, [])
   const guarded = (work: () => Promise<unknown>) => act(async () => { await reauth.confirm(); await work(); await refresh() })
@@ -233,7 +190,7 @@ export function Tokens({ act, twofaMethod }: { act: Act; twofaMethod: string | n
   const [label, setLabel] = useState('')
   const [scopes, setScopes] = useState<string[]>(['sync'])
   const [token, setToken] = useState('')
-  const reauth = useReauth(twofaMethod ?? 'totp')
+  const reauth = useReauth(twofaMethod)
   const toggle = (scope: string) => setScopes(scopes.includes(scope) ? scopes.filter(item => item !== scope) : [...scopes, scope])
 
   return (
@@ -262,9 +219,12 @@ export function Tokens({ act, twofaMethod }: { act: Act; twofaMethod: string | n
       {token && (
         <div className="secret-box">
           <b>Your new token</b>
-          <pre>{token}</pre>
+          <code className="secret-code">{token}</code>
           <small>Copy it now. It cannot be shown again.</small>
-          <button onClick={() => setToken('')}>I saved it</button>
+          <div className="button-row">
+            <button onClick={() => void navigator.clipboard.writeText(token)}>Copy</button>
+            <button onClick={() => setToken('')}>I saved it</button>
+          </div>
         </div>
       )}
     </section>
@@ -273,11 +233,6 @@ export function Tokens({ act, twofaMethod }: { act: Act; twofaMethod: string | n
 
 const toBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 const fromBase64Url = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0))
-
-async function failure(response: Response) {
-  const body = await response.json().catch(() => null)
-  return new Error(body?.error?.message ?? body?.message ?? `Request failed (${response.status})`)
-}
 
 function VaultSettings({ act, vaultId, hasLimit }: { act: Act; vaultId: string; hasLimit: boolean }) {
   const [state, setState] = useState<{ seq: number; blob: string; info: ManifestInfo } | null>(null)
@@ -327,7 +282,7 @@ export function YourData({ act, usageBytes, quotaBytes, email, twofaMethod, unlo
   const [vaults, setVaults] = useState<Vault[]>([])
   const [typed, setTyped] = useState('')
   const [keepCollections, setKeepCollections] = useState(true)
-  const reauth = useReauth(twofaMethod ?? 'totp')
+  const reauth = useReauth(twofaMethod)
   const refresh = async () => setVaults(await request<Vault[]>('/vaults'))
   useEffect(() => { refresh().catch(() => setVaults([])) }, [])
   const used = quotaBytes ? Math.min(100, usageBytes / quotaBytes * 100) : 0
@@ -362,7 +317,7 @@ export function YourData({ act, usageBytes, quotaBytes, email, twofaMethod, unlo
                     <td>{vault.maxSeq}</td>
                     <td>{formatBytes(vault.usageBytes)}</td>
                     <td>
-                      <button className="danger" disabled={!reauth.ready} onClick={() => act(async () => { await reauth.confirm(); await request(`/vaults/${vault.vaultId}`, { method: 'DELETE' }); await refresh() })}>Delete</button>
+                      <button className="danger" disabled={!reauth.ready} onClick={() => { if (confirm(`Delete vault ${vault.vaultId} from the server? History on your PCs is not touched.`)) void act(async () => { await reauth.confirm(); await request(`/vaults/${encodeURIComponent(vault.vaultId)}`, { method: 'DELETE' }); await refresh() }) }}>Delete</button>
                     </td>
                   </tr>
                 ))}
@@ -381,14 +336,14 @@ export function YourData({ act, usageBytes, quotaBytes, email, twofaMethod, unlo
           <button
             className="danger"
             disabled={!reauth.ready || !confirmed}
-            onClick={() => act(async () => { await reauth.confirm(); await request(`/account/data${keepCollections ? '?keepCollections=true' : ''}`, { method: 'DELETE' }); setTyped(''); await refresh() })}
+            onClick={() => { if (confirm('Delete all synced data from the server now? This cannot be undone.')) void act(async () => { await reauth.confirm(); await request(`/account/data${keepCollections ? '?keepCollections=true' : ''}`, { method: 'DELETE' }); setTyped(''); await refresh() }) }}
           >
             Delete all synced data
           </button>
           <button
             className="danger"
             disabled={!reauth.ready || !confirmed}
-            onClick={() => act(async () => { await reauth.confirm(); await request('/account', { method: 'DELETE' }); onDeleted() })}
+            onClick={() => { if (confirm('Permanently delete this account and everything stored for it?')) void act(async () => { await reauth.confirm(); await request('/account', { method: 'DELETE' }); onDeleted() }) }}
           >
             Delete account
           </button>
@@ -419,7 +374,7 @@ export function DeviceTransfer({ act, accountId, unlocked, twofaMethod, onReceiv
   const [incoming, setIncoming] = useState<{ transferId: string; code: string } | null>(null)
   const [code, setCode] = useState('')
   const [sent, setSent] = useState(false)
-  const reauth = useReauth(twofaMethod ?? 'totp')
+  const reauth = useReauth(twofaMethod)
 
   useEffect(() => {
     if (!incoming) return
@@ -465,7 +420,7 @@ export function DeviceTransfer({ act, accountId, unlocked, twofaMethod, onReceiv
       {unlocked ? (
         <>
           <label>Code shown on the new device<input autoComplete="off" value={code} onChange={event => { setCode(event.target.value); setSent(false) }} /></label>
-          {reauth.fields}
+          {reauth.note}
           <button className="primary" disabled={!code.trim() || !reauth.ready} onClick={send}>Send key to that device</button>
           {sent && <div className="alert">Sent. The other device unlocks within a few seconds.</div>}
         </>
@@ -503,6 +458,7 @@ export function Collections({ act }: { act: Act }) {
   const [items, setItems] = useState<Collection[]>([])
   const [draft, setDraft] = useState<Collection | null>(null)
   const [worldInput, setWorldInput] = useState('')
+  const [copied, setCopied] = useState('')
   const refresh = async () => setItems(await request<Collection[]>('/collections'))
   useEffect(() => { refresh().catch(() => setItems([])) }, [])
   const set = (patch: Partial<Collection>) => setDraft(current => current && { ...current, ...patch })
@@ -591,7 +547,8 @@ export function Collections({ act }: { act: Act }) {
                   <td>
                     <div className="button-row">
                       <button onClick={() => setDraft(item)}>Edit</button>
-                      <button className="danger" onClick={() => act(async () => { await request(`/collections/${item.id}`, { method: 'DELETE' }); await refresh() })}>Delete</button>
+                      <button onClick={() => void navigator.clipboard.writeText(`${location.origin}/c/${item.id}`).then(() => setCopied(item.id))}>{copied === item.id ? 'Link copied' : 'Copy link'}</button>
+                      <button className="danger" onClick={() => { if (confirm(`Delete the collection "${item.title}"? Its link stops working.`)) void act(async () => { await request(`/collections/${item.id}`, { method: 'DELETE' }); await refresh() }) }}>Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -635,7 +592,7 @@ export function ChosenPassphrase({ act, accountId, twofaMethod, onSaved }: { act
   const [repeat, setRepeat] = useState('')
   const [strength, setStrength] = useState<number | null>(null)
   const [accepted, setAccepted] = useState(false)
-  const reauth = useReauth(twofaMethod ?? 'totp')
+  const reauth = useReauth(twofaMethod)
 
   useEffect(() => {
     let current = true
@@ -665,7 +622,7 @@ export function ChosenPassphrase({ act, accountId, twofaMethod, onSaved }: { act
         </>
       )}
       {passphrase && repeat && passphrase !== repeat && <div className="alert error">The two passphrases do not match.</div>}
-      {reauth.fields}
+      {reauth.note}
       <button
         className="primary"
         disabled={!ready}
@@ -691,17 +648,17 @@ export function Pairing({ act, twofaMethod }: { act: Act; twofaMethod: string | 
   const [code, setCode] = useState('')
   const [info, setInfo] = useState<PairInfo | null>(null)
   const [scopes, setScopes] = useState<string[]>([])
-  const reauth = useReauth(twofaMethod ?? 'totp')
-  const path = `/pair/${encodeURIComponent(code)}`
+  const reauth = useReauth(twofaMethod)
+  const path = `/pair/${encodeURIComponent(code.trim())}`
   const toggle = (scope: string) => setScopes(scopes.includes(scope) ? scopes.filter(item => item !== scope) : [...scopes, scope])
 
   return (
     <section className="card wide">
       <h2>Approve a device</h2>
       <p className="muted">Enter the code shown in VRCX-0-Nanashi. Check the device name, and untick any permission you do not want to give it.</p>
-      <label>Device code<input value={code} onChange={event => { setCode(event.target.value.toUpperCase()); setInfo(null) }} placeholder="ABCD-EFGH" /></label>
+      <label>Device code<input autoComplete="off" autoCapitalize="characters" spellCheck={false} value={code} onChange={event => { setCode(event.target.value.toUpperCase()); setInfo(null) }} placeholder="ABCD-EFGH" /></label>
       {!info ? (
-        <button className="primary" disabled={!code.trim()} onClick={() => act(async () => { const result = await request<PairInfo>(path); setInfo(result); setScopes(result.requestedScopes) })}>Review device</button>
+        <button className="primary" disabled={!code.trim()} onClick={() => act(async () => { const result = await request<PairInfo>(`/pair/${encodeURIComponent(code.trim())}`); setInfo(result); setScopes(result.requestedScopes) })}>Review device</button>
       ) : (
         <>
           <div className="pair-info">

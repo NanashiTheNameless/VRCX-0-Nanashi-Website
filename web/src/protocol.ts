@@ -1,3 +1,5 @@
+import { startProtocolWorker } from './workers'
+
 type ChunkInput = { chunkId: string; blob: string }
 type OpenBatch = { vaultId: string; manifestSeq: number; highestManifestSeq: number | null; manifest: string; chunks: ChunkInput[] }
 
@@ -7,7 +9,7 @@ const pending = new Map<number, { resolve: (value: any[]) => void; reject: (erro
 
 function getWorker() {
   if (!worker) {
-    worker = new Worker(new URL('./protocol.worker.ts', import.meta.url), { type: 'module' })
+    worker = startProtocolWorker()
     worker.onmessage = (event: MessageEvent<{ id: number; result?: any; error?: string }>) => {
       const task = pending.get(event.data.id)
       if (!task) return
