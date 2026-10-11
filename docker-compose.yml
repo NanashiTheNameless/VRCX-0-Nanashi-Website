@@ -80,6 +80,7 @@ services:
     <<: *hardening
     image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-mailer:latest
     user: "10003:10003"
+    group_add: ["${REMOTESYNC_SECRETS_GID:-1000}"]
     network_mode: bridge
     environment:
       REMOTESYNC_MAIL_SOCKET: /run/remotesync/mail/mail.sock
@@ -94,6 +95,7 @@ services:
     <<: *hardening
     image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-blobstore:latest
     user: "10005:10005"
+    group_add: ["${REMOTESYNC_SECRETS_GID:-1000}"]
     network_mode: bridge
     environment:
       REMOTESYNC_BLOB_SOCKET: /run/remotesync/blob/blob.sock
@@ -111,6 +113,7 @@ services:
   cloudflared:
     <<: *hardening
     image: cloudflare/cloudflared:latest
+    group_add: ["${REMOTESYNC_SECRETS_GID:-1000}"]
     command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
     network_mode: bridge
     volumes:
