@@ -82,8 +82,11 @@ export function useReauth(defaultMethod: string | null) {
       <label>
         {method === 'totp' ? 'Authenticator code' : method === 'email' ? 'Email verification code' : 'Recovery code'}
         <input
+          type="text"
+          name="code"
           autoComplete={method === 'recovery' ? 'off' : 'one-time-code'}
           inputMode={method === 'recovery' ? 'text' : 'numeric'}
+          pattern={method === 'recovery' ? undefined : '[0-9]*'}
           value={code}
           onChange={event => update({ code: event.target.value })}
         />

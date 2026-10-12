@@ -106,7 +106,7 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
         await reauth.confirm()
         setTotpSetup(await request('/security/twofa/totp', { method: 'POST' }))
       })}>Set up authenticator app</button>}
-      {totpSetup && <TotpSetup secret={totpSetup.secret} uri={totpSetup.uri}><label>New authenticator code<input autoComplete="one-time-code" inputMode="numeric" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+      {totpSetup && <TotpSetup secret={totpSetup.secret} uri={totpSetup.uri}><label>New authenticator code<input type="text" name="code" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]*" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
         await request('/security/twofa/totp/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
         setTotpSetup(null); setTargetCode(''); await onUpdated()
       })}>Confirm authenticator app</button></TotpSetup>}
@@ -115,7 +115,7 @@ export function AccountSecurity({ email, twofaMethod, act, onUpdated }: {
         await request('/security/twofa/email', { method: 'POST' })
         setEmailChangeSent(true)
       })}>Use email codes instead</button>}
-      {twofaMethod !== 'email' && emailChangeSent && <div className="secret-box"><p>A confirmation code was sent to {email}.</p><label>Email code<input autoComplete="one-time-code" inputMode="numeric" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
+      {twofaMethod !== 'email' && emailChangeSent && <div className="secret-box"><p>A confirmation code was sent to {email}.</p><label>Email code<input type="text" name="code" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]*" value={targetCode} onChange={event => setTargetCode(event.target.value)} /></label><button className="primary" disabled={!targetCode} onClick={() => act(async () => {
         await request('/security/twofa/email/confirm', { method: 'POST', body: JSON.stringify({ code: targetCode }) })
         setEmailChangeSent(false); setTargetCode(''); await onUpdated()
       })}>Confirm email codes</button></div>}
