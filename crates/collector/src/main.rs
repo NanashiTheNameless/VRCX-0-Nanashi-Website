@@ -1313,6 +1313,11 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     if !tmpfs(&config.tmpfs)? {
         return Err(format!("{} must be a tmpfs mount", config.tmpfs.display()).into());
     }
+    let runtime_root = Path::new(RUNTIME_DIR);
+    if !tmpfs(runtime_root)? {
+        return Err(format!("{} must be a tmpfs mount", runtime_root.display()).into());
+    }
+    std::fs::set_permissions(runtime_root, std::fs::Permissions::from_mode(0o755))?;
     let available = compatible_collector_available();
     if !available {
         tracing::warn!(

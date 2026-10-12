@@ -71,7 +71,7 @@ services:
       - collector-sock:/run/remotesync/collector-sock
     tmpfs:
       - "/run/collector:size=512m,noexec,nosuid,nodev,uid=0,gid=10007,mode=0711"
-      - "/run/vrcx-runtime:size=256m,exec,nosuid,nodev,uid=0,gid=10007,mode=0750"
+      - "/run/vrcx-runtime:size=256m,exec,nosuid,nodev,uid=0,gid=10007,mode=0755"
       - "/tmp:size=16m,noexec,nosuid,nodev"
     mem_limit: 768m
 
