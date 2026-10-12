@@ -19,7 +19,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
   const [twoFactorCookie, setTwoFactorCookie] = useState('')
   const [days, setDays] = useState('7')
   const [forever, setForever] = useState(false)
-  const [interval, setInterval] = useState('300')
+  const [interval, setInterval] = useState('60')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
 
