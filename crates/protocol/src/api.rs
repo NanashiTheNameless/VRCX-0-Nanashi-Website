@@ -276,6 +276,7 @@ pub enum CollectorState {
     Running,
     NeedsUnlock,
     AuthFailed,
+    Failed,
     Disabled,
 }
 

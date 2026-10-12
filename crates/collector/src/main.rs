@@ -878,10 +878,10 @@ async fn run_child(mut session: ChildSession, mut stop: oneshot::Receiver<()>) {
         state.state = if error == codes::COLLECTOR_UNAVAILABLE {
             session.supervisor.available.store(false, Ordering::Relaxed);
             codes::COLLECTOR_UNAVAILABLE.into()
-        } else if error.contains("auth") {
+        } else if error == "auth_failed" {
             "auth_failed".into()
         } else {
-            "needs_unlock".into()
+            "failed".into()
         };
         state.last_error = Some(error.chars().take(240).collect());
         Some(state.clone())
