@@ -303,7 +303,7 @@ fn content_security_policy(
     extra_sources: &str,
 ) -> Result<HeaderValue, axum::http::header::InvalidHeaderValue> {
     HeaderValue::from_str(&format!(
-        "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https://api.vrchat.cloud https://assets.vrchat.com data:{extra_sources}; font-src 'self'; connect-src 'self' {api_origin}{extra_sources}; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'"
+        "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https://api.vrchat.cloud https://files.vrchat.cloud https://assets.vrchat.com data:{extra_sources}; font-src 'self'; connect-src 'self' {api_origin}{extra_sources}; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'"
     ))
 }
 
