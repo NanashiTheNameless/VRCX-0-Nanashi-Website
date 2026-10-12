@@ -182,7 +182,6 @@ export default function Dashboard() {
           {pages.map(([pageId, Icon, label]) => <a key={pageId} href={`#${pageId}`} aria-current={id === pageId ? 'page' : undefined}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>)}
         </nav>
         <div className="profile">
-          <span className="avatar" aria-hidden="true">{me.email[0].toUpperCase()}</span>
           <span className="ellipsis" title={me.email}>{me.email}</span>
           <button title="Sign out" aria-label="Sign out" disabled={busy} onClick={() => void signOut()}><LogOut size={17} aria-hidden="true" /></button>
         </div>
