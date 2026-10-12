@@ -122,7 +122,10 @@ export default function Dashboard() {
   const unlockBrowserKey = async (key: string) => { await unlockProtocolWorker(key); setBrowserKeyUnlocked(true) }
   const forgetBrowserKey = async () => { await forgetProtocolWorker(); setBrowserKeyUnlocked(false) }
   const authenticated = (session: string, recoveryCodes?: string[]) => {
-    ;(keep ? localStorage : sessionStorage).setItem(tokenKey, session)
+    const storage = keep ? localStorage : sessionStorage
+    const otherStorage = keep ? sessionStorage : localStorage
+    otherStorage.removeItem(tokenKey)
+    storage.setItem(tokenKey, session)
     if (location.pathname !== '/dashboard' && location.pathname !== '/pair') history.replaceState(null, '', '/dashboard')
     setError(''); setNotice(''); setPage(pageFromLocation())
     setToken(session)
