@@ -209,7 +209,8 @@ fn admin_account_json(account: AccountRow) -> serde_json::Value {
         "createdAtMs": account.created_at_ms, "usageBytes": account.usage_bytes,
         "quotaBytes": account.effective_quota(), "maxVaults": account.max_vaults,
         "collectorAllowed": account.effective_collector_allowed(),
-        "syncAllowed": account.sync_allowed
+        "syncAllowed": account.sync_allowed,
+        "signupMessage": account.signup_message
     })
 }
 
