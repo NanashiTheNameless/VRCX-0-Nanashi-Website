@@ -1,10 +1,10 @@
-FROM rust:1.99-bookworm AS build
+FROM rust:1.99-trixie AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release -p vrcx-0-nanashi-website-blobstore
 RUN mkdir -p /runtime-blobs && chown 10005:10005 /runtime-blobs
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/remotesync-blobstore /usr/local/bin/remotesync-blobstore
 COPY --from=build --chown=10005:10005 /runtime-blobs /blobs
 USER 10005:10005

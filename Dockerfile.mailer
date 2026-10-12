@@ -1,9 +1,9 @@
-FROM rust:1.99-bookworm AS build
+FROM rust:1.99-trixie AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release -p vrcx-0-nanashi-website-mailer
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/remotesync-mailer /usr/local/bin/remotesync-mailer
 USER 10003:10003
 ENTRYPOINT ["/usr/local/bin/remotesync-mailer"]

@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS artifact-check
+FROM --platform=$BUILDPLATFORM node:26-trixie-slim AS artifact-check
 ARG TARGETARCH
 ARG VRCX0_COLLECTOR_BINARY
 ARG VRCX0_COLLECTOR_APP_VERSION
@@ -16,7 +16,7 @@ RUN node /usr/local/bin/collector-input.mjs \
     "$TARGETARCH" \
     /tmp/collector-runtime.json
 
-FROM rust:1.99-bookworm AS build
+FROM rust:1.99-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
