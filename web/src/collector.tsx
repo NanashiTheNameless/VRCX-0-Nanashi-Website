@@ -18,6 +18,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
   const [authCookie, setAuthCookie] = useState('')
   const [twoFactorCookie, setTwoFactorCookie] = useState('')
   const [days, setDays] = useState('7')
+  const [forever, setForever] = useState(false)
   const [interval, setInterval] = useState('300')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -46,7 +47,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
     if (!cap?.available) throw new Error('The collector service is unavailable on this server.')
     if (!authCookie.trim()) throw new Error('Enter the VRChat auth cookie.')
     const expiryDays = Number(days), intervalSeconds = Number(interval)
-    if (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 30) throw new Error('Session duration must be from 1 to 30 days.')
+    if (!forever && (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 30)) throw new Error('Session duration must be from 1 to 30 days.')
     if (!Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 900) throw new Error('Sync interval must be from 60 to 900 seconds.')
     let userId = vrchatUserId.trim()
     if (vault.manifestSeq > 0) {
@@ -59,7 +60,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
       }
     }
     if (!userId) throw new Error('Enter your VRChat user ID; it is not stored in this vault manifest.')
-    const sealed = await collectorSealUnlock({ accountId, vaultId: vault.vaultId, unlockKey: cap.unlockKey, vrchatUserId: userId, authCookie: authCookie.trim(), twoFactorCookie: twoFactorCookie.trim(), expiresAt: Date.now() + expiryDays * 24 * 60 * 60 * 1000, intervalSeconds })
+    const sealed = await collectorSealUnlock({ accountId, vaultId: vault.vaultId, unlockKey: cap.unlockKey, vrchatUserId: userId, authCookie: authCookie.trim(), twoFactorCookie: twoFactorCookie.trim(), expiresAt: forever ? null : Date.now() + expiryDays * 24 * 60 * 60 * 1000, intervalSeconds })
     const response = await apiFetch(`/vaults/${encodeURIComponent(vault.vaultId)}/collector/unlock`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: decode(sealed.sealed).buffer as ArrayBuffer })
     if (!response.ok) throw await failure(response)
     setAuthCookie(''); setTwoFactorCookie(''); await refresh()
@@ -77,12 +78,12 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
         {status?.state === 'running' ? <button className="danger" onClick={() => lock(vault)}>Lock collector</button> : <button onClick={() => setSelected(vault.vaultId)}>Configure session</button>}
       </article>)}</div>}
     </article>
-    <article className="card"><h2>Start a collector session</h2><p className="muted">A collector session stores VRChat session cookies in server memory until it expires or you lock it. Use a temporary session and lock it when finished.</p>
+    <article className="card"><h2>Start a collector session</h2><p className="muted">A collector session stores VRChat session cookies in server memory until it expires, you lock it, or the collector stops. Lock it when finished.</p>
       <label>Vault<select value={selected} onChange={event => setSelected(event.target.value)}>{rows.map(({ vault }) => <option key={vault.vaultId} value={vault.vaultId}>{vault.vaultId}</option>)}</select></label>
       <label>VRChat user ID<input autoComplete="off" value={vrchatUserId} onChange={event => setVrchatUserId(event.target.value)} placeholder={chosen ? 'Read from the vault manifest when possible' : 'usr_…'}/></label>
       <label>VRChat auth cookie<input type="password" autoComplete="off" value={authCookie} onChange={event => setAuthCookie(event.target.value)}/></label>
       <label>Two-factor auth cookie (optional)<input type="password" autoComplete="off" value={twoFactorCookie} onChange={event => setTwoFactorCookie(event.target.value)}/></label>
-      <div className="form-grid"><label>Session duration (days)<input type="number" min="1" max="30" value={days} onChange={event => setDays(event.target.value)}/></label><label>Sync interval (seconds)<input type="number" min="60" max="900" value={interval} onChange={event => setInterval(event.target.value)}/></label></div>
+      <div className="form-grid"><label>Session duration (days)<input type="number" min="1" max="30" value={days} disabled={forever} onChange={event => setDays(event.target.value)}/></label><label className="check-label"><input type="checkbox" checked={forever} onChange={event => setForever(event.target.checked)}/><span>Run forever (no expiration)</span></label><label>Sync interval (seconds)<input type="number" min="60" max="900" value={interval} onChange={event => setInterval(event.target.value)}/></label></div>
       <button className="primary" disabled={!selected || !unlocked || !capabilities?.available} onClick={() => chosen && void start(chosen)}>Start collector</button>{!unlocked && <p className="muted"><a href="#security">Unlock your sync key under Security</a> to seal and start a session.</p>}
     </article>
   </>

@@ -50,7 +50,7 @@ export type ManifestInfo = { subject: { vrchatUserId: string; displayName: strin
 type ManifestInput = { vaultId: string; manifestSeq: number; manifest: string }
 export const manifestInfo = (input: ManifestInput): Promise<ManifestInfo> => callWorker('manifestInfo', input)
 export const manifestRetention = (input: ManifestInput & { maxAgeDays: number | null; keepBelowLimitMarginPct: number | null }): Promise<{ manifest: string; manifestSeq: number }> => callWorker('manifestRetention', input)
-export const collectorSealUnlock = (input: { accountId: string; vaultId: string; unlockKey: string; vrchatUserId: string; authCookie: string; twoFactorCookie: string; expiresAt: number; intervalSeconds: number }): Promise<{ sealed: string }> => callWorker('collectorSealUnlock', input)
+export const collectorSealUnlock = (input: { accountId: string; vaultId: string; unlockKey: string; vrchatUserId: string; authCookie: string; twoFactorCookie: string; expiresAt: number | null; intervalSeconds: number }): Promise<{ sealed: string }> => callWorker('collectorSealUnlock', input)
 
 export function stopProtocolWorker() {
   worker?.terminate()

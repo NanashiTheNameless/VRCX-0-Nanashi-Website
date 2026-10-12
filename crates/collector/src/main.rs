@@ -116,7 +116,7 @@ struct UnlockPayload {
     vault_pk: String,
     vrchat_user_id: String,
     cookies: Cookies,
-    expires_at: i64,
+    expires_at: Option<i64>,
     interval_seconds: u64,
 }
 
@@ -1000,7 +1000,7 @@ async fn run_child_inner(
                 }
             }
         }
-        if now_ms() >= expires_at {
+        if expires_at.is_some_and(|expiry| now_ms() >= expiry) {
             break;
         }
     }
@@ -1080,8 +1080,9 @@ async fn unlock(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid unlock payload").into_response(),
     };
     if payload.version != 1
-        || payload.expires_at <= now_ms()
-        || payload.expires_at > now_ms() + 30 * 24 * 60 * 60 * 1000
+        || payload.expires_at.is_some_and(|expiry| {
+            expiry <= now_ms() || expiry > now_ms() + 30 * 24 * 60 * 60 * 1000
+        })
         || !(60..=900).contains(&payload.interval_seconds)
         || payload.vrchat_user_id.is_empty()
         || payload.vrchat_user_id.len() > 128

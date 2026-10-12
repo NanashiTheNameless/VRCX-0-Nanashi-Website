@@ -172,6 +172,10 @@ fn process(input: &[u8]) -> Vec<u8> {
 }
 
 fn collector_unlock_seal(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let expires_at = value.get("expiresAt").ok_or("missing expiry")?;
+    if !expires_at.is_null() && expires_at.as_i64().is_none() {
+        return Err("invalid expiry".into());
+    }
     let sync_key_hex = value
         .get("syncKeyHex")
         .and_then(serde_json::Value::as_str)
@@ -206,7 +210,7 @@ fn collector_unlock_seal(value: serde_json::Value) -> Result<serde_json::Value, 
             "auth": value.get("authCookie").and_then(serde_json::Value::as_str).ok_or("missing auth cookie")?,
             "twoFactorAuth": value.get("twoFactorCookie").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()),
         },
-        "expiresAt": value.get("expiresAt").and_then(serde_json::Value::as_i64).ok_or("missing expiry")?,
+        "expiresAt": expires_at,
         "intervalSeconds": value.get("intervalSeconds").and_then(serde_json::Value::as_u64).ok_or("missing interval")?,
     });
     let plaintext = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
