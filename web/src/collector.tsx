@@ -78,13 +78,17 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
         {status?.state === 'running' ? <button className="danger" onClick={() => lock(vault)}>Lock collector</button> : <button onClick={() => setSelected(vault.vaultId)}>Configure session</button>}
       </article>)}</div>}
     </article>
-    <article className="card"><h2>Start a collector session</h2><p className="muted">A collector session stores VRChat session cookies in server memory until it expires, you lock it, or the collector stops. Lock it when finished.</p>
+    <article className="card"><h2>Start a collector session</h2><p className="muted">The easiest setup is from VRCX-0-Nanashi under Settings &gt; Sync Options. The app uses your saved VRChat session, so you do not need to copy cookies.</p>
+      <details>
+      <summary className="advanced-summary">Set up manually from this browser</summary>
+      <p className="muted">This sends VRChat session cookies sealed to the server's collector. The server operator can use them to read your account activity. The collector is read-only and keeps the session until it expires, you lock it, or the collector stops.</p>
       <label>Vault<select value={selected} onChange={event => setSelected(event.target.value)}>{rows.map(({ vault }) => <option key={vault.vaultId} value={vault.vaultId}>{vault.vaultId}</option>)}</select></label>
       <label>VRChat user ID<input autoComplete="off" value={vrchatUserId} onChange={event => setVrchatUserId(event.target.value)} placeholder={chosen ? 'Read from the vault manifest when possible' : 'usr_…'}/></label>
       <label>VRChat auth cookie<input type="password" autoComplete="off" value={authCookie} onChange={event => setAuthCookie(event.target.value)}/></label>
       <label>Two-factor auth cookie (optional)<input type="password" autoComplete="off" value={twoFactorCookie} onChange={event => setTwoFactorCookie(event.target.value)}/></label>
       <div className="form-grid"><label>Session duration (days)<input type="number" min="1" max="30" value={days} disabled={forever} onChange={event => setDays(event.target.value)}/></label><label className="check-label"><input type="checkbox" checked={forever} onChange={event => setForever(event.target.checked)}/><span>Run forever (no expiration)</span></label><label>Sync interval (seconds)<input type="number" min="60" max="900" value={interval} onChange={event => setInterval(event.target.value)}/></label></div>
-      <button className="primary" disabled={!selected || !unlocked || !capabilities?.available} onClick={() => chosen && void start(chosen)}>Start collector</button>{!unlocked && <p className="muted"><a href="#security">Unlock your sync key under Security</a> to seal and start a session.</p>}
+      <button className="primary" disabled={!selected || !unlocked || !capabilities?.available} onClick={() => chosen && void start(chosen)}>Start collector</button>{!unlocked && <p className="muted"><a href="/dashboard/security">Unlock your sync key under Security</a> to seal and start a session.</p>}
+      </details>
     </article>
   </>
 }

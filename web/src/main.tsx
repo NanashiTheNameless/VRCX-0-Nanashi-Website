@@ -69,7 +69,14 @@ function NotFoundPage() {
   )
 }
 
-const DASHBOARD_PATHS = ['/dashboard', '/pair', '/invite', '/verify', '/reset']
+const DASHBOARD_PATHS = [
+  '/dashboard',
+  ...['devices', 'pair', 'data', 'collections', 'security', 'collector', 'admin'].map(page => `/dashboard/${page}`),
+  '/pair',
+  '/invite',
+  '/verify',
+  '/reset',
+]
 
 function App() {
   const path = location.pathname

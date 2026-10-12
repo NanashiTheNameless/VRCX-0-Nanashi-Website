@@ -194,9 +194,9 @@ export function Tokens({ act, twofaMethod }: { act: Act; twofaMethod: string | n
   const toggle = (scope: string) => setScopes(scopes.includes(scope) ? scopes.filter(item => item !== scope) : [...scopes, scope])
 
   return (
-    <section className="card wide">
-      <h2>Create a token</h2>
-      <p className="muted">For setups that cannot use pairing. The token is shown once. Anyone who has it can act with the scopes you tick, so prefer pairing when you can.</p>
+    <details className="card wide">
+      <summary className="advanced-summary">Advanced: create a manual token</summary>
+      <p className="muted">Use this only for setups that cannot pair a device. Paired devices receive the access they need automatically. The token is shown once and grants the scopes you select.</p>
       <label>Label<input maxLength={64} value={label} onChange={event => setLabel(event.target.value)} /></label>
       {SCOPES.map(([scope, text]) => (
         <label className="check-label" key={scope}>
@@ -227,7 +227,7 @@ export function Tokens({ act, twofaMethod }: { act: Act; twofaMethod: string | n
           </div>
         </div>
       )}
-    </section>
+    </details>
   )
 }
 

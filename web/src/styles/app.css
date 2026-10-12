@@ -78,6 +78,8 @@ p { line-height: 1.65; }
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 15px 0; }
 .cards > .card { min-width: 0; }
 .card { padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-width: 0; }
+.advanced-summary { cursor: pointer; font-weight: 600; }
+details[open] > .advanced-summary { margin-bottom: 12px; }
 .card-title { color: #a9aab4; font-size: 12px; margin-bottom: 14px; }
 .card strong { display: block; font-size: 23px; margin-bottom: 15px; }
 .card small { display: block; margin-top: 9px; font-size: 11px; }

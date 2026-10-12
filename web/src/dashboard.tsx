@@ -34,8 +34,11 @@ const PAGES = [
 type PageId = typeof PAGES[number][0]
 
 function pageFromLocation(): PageId {
+  const pathPage = location.pathname.startsWith('/dashboard/')
+    ? location.pathname.slice('/dashboard/'.length).split('/')[0]
+    : ''
   const hash = location.hash.slice(1)
-  const known = PAGES.find(([id]) => id === hash)
+  const known = PAGES.find(([id]) => id === pathPage) ?? PAGES.find(([id]) => id === hash)
   if (known) return known[0]
   return location.pathname === '/pair' ? 'pair' : 'home'
 }
@@ -102,7 +105,11 @@ export default function Dashboard() {
   useEffect(() => {
     const update = () => { setPage(pageFromLocation()); setError(''); setNotice('') }
     window.addEventListener('hashchange', update)
-    return () => window.removeEventListener('hashchange', update)
+    window.addEventListener('popstate', update)
+    return () => {
+      window.removeEventListener('hashchange', update)
+      window.removeEventListener('popstate', update)
+    }
   }, [])
 
   const isAdmin = me ? ['admin', 'owner'].includes(me.role) : false
@@ -130,7 +137,7 @@ export default function Dashboard() {
     const otherStorage = keep ? sessionStorage : localStorage
     otherStorage.removeItem(tokenKey)
     storage.setItem(tokenKey, session)
-    if (location.pathname !== '/dashboard' && location.pathname !== '/pair') history.replaceState(null, '', '/dashboard')
+    if (!location.pathname.startsWith('/dashboard') && location.pathname !== '/pair') history.replaceState(null, '', '/dashboard')
     setError(''); setNotice(''); setPage(pageFromLocation())
     setEnvelopes(null)
     setToken(session)
@@ -177,9 +184,9 @@ export default function Dashboard() {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <a className="brand" href="#home"><img className="brand-mark" src="/vrcx-0-nanashi.png" alt="" /><span>RemoteSync</span></a>
+        <a className="brand" href="/dashboard"><img className="brand-mark" src="/vrcx-0-nanashi.png" alt="" /><span>RemoteSync</span></a>
         <nav aria-label="Dashboard">
-          {pages.map(([pageId, Icon, label]) => <a key={pageId} href={`#${pageId}`} aria-current={id === pageId ? 'page' : undefined}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>)}
+          {pages.map(([pageId, Icon, label]) => <a key={pageId} href={pageId === 'home' ? '/dashboard' : `/dashboard/${pageId}`} aria-current={id === pageId ? 'page' : undefined}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>)}
         </nav>
         <div className="profile">
           <span className="ellipsis" title={me.email}>{me.email}</span>
@@ -206,11 +213,17 @@ export default function Dashboard() {
               <>
                 <AccountSecurity email={me.email} twofaMethod={me.twofaMethod} act={act} onUpdated={async () => setMe(await request<Me>('/me'))} />
                 <div className="security-grid">
-                  <KeyUnlock act={act} unlocked={browserKeyUnlocked} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} />
                   <DeviceTransfer act={act} accountId={me.accountId} unlocked={browserKeyUnlocked} twofaMethod={me.twofaMethod} onReceived={() => setBrowserKeyUnlocked(true)} />
                   <Security me={me} act={act} setNotice={setNotice} showCodes={setCodes} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} envelopes={envelopes} setEnvelopes={setEnvelopes} />
-                  <ChosenPassphrase act={act} accountId={me.accountId} twofaMethod={me.twofaMethod} onSaved={() => setNotice('Envelope saved. Remember this passphrase; it cannot be recovered.')} />
                 </div>
+                <details className="card wide">
+                  <summary className="advanced-summary">Advanced key recovery options</summary>
+                  <p className="muted">Use these options if you cannot transfer your key from another signed-in device or unlock a saved envelope.</p>
+                  <div className="security-grid">
+                    <KeyUnlock act={act} unlocked={browserKeyUnlocked} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} />
+                    <ChosenPassphrase act={act} accountId={me.accountId} twofaMethod={me.twofaMethod} onSaved={() => setNotice('Envelope saved. Remember this passphrase; it cannot be recovered.')} />
+                  </div>
+                </details>
               </>
             )}
             {id === 'collector' && <CollectorPage accountId={me.accountId} allowed={me.collectorAllowed} unlocked={browserKeyUnlocked} act={act} />}
@@ -395,7 +408,7 @@ function AuthForm({ error, keep, setKeep, onAuthenticated }: { error: string; ke
   )
 }
 
-function Overview({me,keyUnlocked,onForget}:{me:Me,keyUnlocked:boolean,onForget:()=>Promise<void>}) { const usage=me.usageBytes;const pct=me.quotaBytes?Math.min(100,usage/me.quotaBytes*100):0;return <>{me.recoveryCodesLeft<=2&&<div className="alert error">{me.recoveryCodesLeft===0?'No recovery codes remain.':`Only ${me.recoveryCodesLeft} recovery ${me.recoveryCodesLeft===1?'code remains':'codes remain'}.`} Generate a fresh set under <a href="#security">Security</a>.</div>}<div className="hero"><div><div className="eyebrow">REMOTESYNC</div><h2>{me.syncAllowed?'Your account is ready':'Sync is disabled for this account'}</h2><p>{me.syncAllowed?'RemoteSync keeps your VRCX-0-Nanashi history encrypted on the server and available to your devices. Pair the app under Pair device, then unlock your key under Security to read history here.':'An administrator has turned off history sync for this account. Shared collections still work.'}</p></div><Activity size={48} aria-hidden="true"/></div><div className="cards"><article className="card"><div className="card-title">Storage usage</div><strong>{formatBytes(usage)}</strong><div className="progress"><i style={{width:`${pct}%`}}/></div><small>{me.quotaBytes?`of ${formatBytes(me.quotaBytes)} limit`:'No storage limit'}</small></article><article className="card"><div className="card-title">RemoteSync access</div><strong>{me.syncAllowed?'Enabled':'Disabled'}</strong><small>{me.collectorAllowed?'Collector access is allowed':'Collector access is disabled'}</small></article><article className="card"><div className="card-title">Security</div><strong>{me.twofaMethod==='totp'?'Authenticator app':me.twofaMethod==='email'?'Email codes':'Not set up'}</strong><small>{me.recoveryCodesLeft} recovery codes remaining</small></article></div>{keyUnlocked&&<div className="key-status">Sync key is unlocked in this tab's protocol Worker. <button onClick={()=>void onForget()}>Forget key</button></div>}<HistoryBrowser unlocked={keyUnlocked} accountId={me.accountId}/></>}
+function Overview({me,keyUnlocked,onForget}:{me:Me,keyUnlocked:boolean,onForget:()=>Promise<void>}) { const usage=me.usageBytes;const pct=me.quotaBytes?Math.min(100,usage/me.quotaBytes*100):0;return <>{me.recoveryCodesLeft<=2&&<div className="alert error">{me.recoveryCodesLeft===0?'No recovery codes remain.':`Only ${me.recoveryCodesLeft} recovery ${me.recoveryCodesLeft===1?'code remains':'codes remain'}.`} Generate a fresh set under <a href="/dashboard/security">Security</a>.</div>}<div className="hero"><div><div className="eyebrow">REMOTESYNC</div><h2>{me.syncAllowed?'Your account is ready':'Sync is disabled for this account'}</h2><p>{me.syncAllowed?'RemoteSync keeps your VRCX-0-Nanashi history encrypted on the server and available to your devices. Pair the app under Pair device, then unlock your key under Security to read history here.':'An administrator has turned off history sync for this account. Shared collections still work.'}</p></div><Activity size={48} aria-hidden="true"/></div><div className="cards"><article className="card"><div className="card-title">Storage usage</div><strong>{formatBytes(usage)}</strong><div className="progress"><i style={{width:`${pct}%`}}/></div><small>{me.quotaBytes?`of ${formatBytes(me.quotaBytes)} limit`:'No storage limit'}</small></article><article className="card"><div className="card-title">RemoteSync access</div><strong>{me.syncAllowed?'Enabled':'Disabled'}</strong><small>{me.collectorAllowed?'Collector access is allowed':'Collector access is disabled'}</small></article><article className="card"><div className="card-title">Security</div><strong>{me.twofaMethod==='totp'?'Authenticator app':me.twofaMethod==='email'?'Email codes':'Not set up'}</strong><small>{me.recoveryCodesLeft} recovery codes remaining</small></article></div>{keyUnlocked&&<div className="key-status">Sync key is unlocked in this tab's protocol Worker. <button onClick={()=>void onForget()}>Forget key</button></div>}<HistoryBrowser unlocked={keyUnlocked} accountId={me.accountId}/></>}
 
 
 function Security({me,act,setNotice,showCodes,onUnlock,onForget,envelopes,setEnvelopes}:{me:Me,act:(f:()=>Promise<void>)=>Promise<void>,setNotice:(s:string)=>void,showCodes:(codes:string[])=>void,onUnlock:(key:string)=>Promise<void>,onForget:()=>Promise<void>,envelopes:any[]|null,setEnvelopes:(value:any[]|null)=>void}) {
