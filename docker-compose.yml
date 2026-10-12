@@ -62,6 +62,7 @@ services:
     <<: *hardening
     image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-collector:latest
     user: "0:10007"
+    group_add: ["65532"]
     cap_add: [SETUID, SETGID, CHOWN]
     network_mode: bridge
     environment:

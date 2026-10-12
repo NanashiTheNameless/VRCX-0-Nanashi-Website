@@ -68,6 +68,7 @@ services:
         VRCX0_COMPAT_APP_VERSION: ${VRCX0_COMPAT_APP_VERSION:-}
         VRCX0_COMPAT_APP_COMMIT: ${VRCX0_COMPAT_APP_COMMIT:-}
     user: "0:10007"
+    group_add: ["65532"]
     cap_add: [SETUID, SETGID, CHOWN]
     network_mode: bridge
     environment:
