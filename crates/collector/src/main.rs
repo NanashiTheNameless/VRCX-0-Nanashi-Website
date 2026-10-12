@@ -98,7 +98,7 @@ struct Capabilities {
     keys_valid_since_ms: i64,
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct CollectorRuntimeMetadata {
     app_version: String,
@@ -107,6 +107,13 @@ struct CollectorRuntimeMetadata {
     compatibility_commit: String,
     architecture: String,
     format: String,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct HeadlessReleaseMetadata {
+    app_version: String,
+    app_commit: String,
 }
 
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -231,10 +238,7 @@ fn compatible_collector_available() -> bool {
     {
         return false;
     }
-    metadata.app_version == metadata.compatibility_version
-        && metadata.app_commit == metadata.compatibility_commit
-        && metadata.architecture == "linux/amd64"
-        && metadata.format == "ELF64 x86-64"
+    valid_runtime_metadata(&metadata)
         && binary.is_file()
         && binary.permissions().mode() & 0o111 == 0o111
         && binary.permissions().mode() & 0o6000 == 0
@@ -306,10 +310,10 @@ fn valid_runtime_metadata(metadata: &CollectorRuntimeMetadata) -> bool {
         && metadata.format == "ELF64 x86-64"
 }
 
-async fn read_runtime_metadata(
+async fn read_headless_release_metadata(
     client: &reqwest::Client,
     url: &str,
-) -> Result<(CollectorRuntimeMetadata, Vec<u8>), String> {
+) -> Result<HeadlessReleaseMetadata, String> {
     let response = client
         .get(url)
         .send()
@@ -330,17 +334,41 @@ async fn read_runtime_metadata(
     if bytes.len() > MAX_RUNTIME_METADATA_BYTES {
         return Err("runtime metadata exceeds size limit".into());
     }
-    let metadata = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    Ok((metadata, bytes.to_vec()))
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn valid_headless_release(metadata: &HeadlessReleaseMetadata) -> bool {
+    valid_nightly_version(&metadata.app_version)
+        && metadata.app_commit.len() == 40
+        && metadata
+            .app_commit
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        && metadata
+            .app_version
+            .rsplit_once('-')
+            .is_some_and(|(_, short_commit)| metadata.app_commit.starts_with(short_commit))
+}
+
+fn collector_runtime_metadata(release: &HeadlessReleaseMetadata) -> CollectorRuntimeMetadata {
+    CollectorRuntimeMetadata {
+        app_version: release.app_version.clone(),
+        app_commit: release.app_commit.clone(),
+        compatibility_version: release.app_version.clone(),
+        compatibility_commit: release.app_commit.clone(),
+        architecture: "linux/amd64".into(),
+        format: "ELF64 x86-64".into(),
+    }
 }
 
 async fn update_headless_runtime(client: &reqwest::Client) -> Result<Option<String>, String> {
     let rolling_metadata_url =
         format!("{VRCX_RELEASE_BASE}/Nightly-Rolling/vrcx-0-nanashi-headless-linux-amd64.json");
-    let (rolling_metadata, _) = read_runtime_metadata(client, &rolling_metadata_url).await?;
-    if !valid_runtime_metadata(&rolling_metadata) {
-        return Err("rolling release has invalid collector metadata".into());
+    let rolling_metadata = read_headless_release_metadata(client, &rolling_metadata_url).await?;
+    if !valid_headless_release(&rolling_metadata) {
+        return Err("rolling release has invalid headless runtime metadata".into());
     }
+    let runtime_metadata = collector_runtime_metadata(&rolling_metadata);
     let (_, current_metadata) = active_runtime_paths();
     if let Ok(bytes) = std::fs::read(current_metadata)
         && let Ok(current) = serde_json::from_slice::<CollectorRuntimeMetadata>(&bytes)
@@ -352,10 +380,12 @@ async fn update_headless_runtime(client: &reqwest::Client) -> Result<Option<Stri
 
     let immutable_base = format!("{VRCX_RELEASE_BASE}/v{}", rolling_metadata.app_version);
     let metadata_url = format!("{immutable_base}/vrcx-0-nanashi-headless-linux-amd64.json");
-    let (immutable_metadata, metadata_bytes) = read_runtime_metadata(client, &metadata_url).await?;
+    let immutable_metadata = read_headless_release_metadata(client, &metadata_url).await?;
     if immutable_metadata != rolling_metadata {
-        return Err("rolling and immutable collector metadata differ".into());
+        return Err("rolling and immutable headless runtime metadata differ".into());
     }
+    let metadata_bytes =
+        serde_json::to_vec(&runtime_metadata).map_err(|error| error.to_string())?;
 
     let runtime_root = Path::new(RUNTIME_DIR);
     if !tmpfs(runtime_root).map_err(|error| error.to_string())? {
@@ -445,7 +475,7 @@ async fn update_headless_runtime(client: &reqwest::Client) -> Result<Option<Stri
     let stored_metadata: CollectorRuntimeMetadata =
         serde_json::from_slice(&stored_metadata_bytes).map_err(|error| error.to_string())?;
     let binary = std::fs::metadata(&binary_path).map_err(|error| error.to_string())?;
-    if stored_metadata != rolling_metadata
+    if stored_metadata != runtime_metadata
         || !binary.is_file()
         || binary.permissions().mode() & 0o111 == 0
         || binary.permissions().mode() & 0o6000 != 0
