@@ -58,7 +58,6 @@ services:
   collector:
     <<: *hardening
     image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-collector:latest
-    profiles: [collector]
     user: "0:10007"
     cap_add: [SETUID, SETGID, CHOWN]
     network_mode: bridge

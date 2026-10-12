@@ -67,7 +67,6 @@ services:
         VRCX0_COLLECTOR_APP_COMMIT: ${VRCX0_COLLECTOR_APP_COMMIT:-}
         VRCX0_COMPAT_APP_VERSION: ${VRCX0_COMPAT_APP_VERSION:-}
         VRCX0_COMPAT_APP_COMMIT: ${VRCX0_COMPAT_APP_COMMIT:-}
-    profiles: [collector]
     user: "0:10007"
     cap_add: [SETUID, SETGID, CHOWN]
     network_mode: bridge
