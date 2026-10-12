@@ -553,6 +553,7 @@ fn child_fd(stream: &std::os::unix::net::UnixStream) -> std::io::Result<RawFd> {
 }
 
 fn launch_child(
+    binary_path: &Path,
     data_dir: &Path,
     child_uid: u32,
     session_child: &std::os::unix::net::UnixStream,
@@ -565,7 +566,7 @@ fn launch_child(
     let session_fd = session_owned.as_raw_fd();
     let rows_fd = rows_owned.as_raw_fd();
     let control_fd = control_owned.as_raw_fd();
-    let mut command = Command::new(HEADLESS_BINARY);
+    let mut command = Command::new(binary_path);
     command
         .args([
             "--collector-mode",
@@ -960,7 +961,9 @@ async fn run_child_inner(
     if !tmpfs(data_dir).map_err(|e| e.to_string())? {
         return Err("collector child data directory is not on tmpfs".into());
     }
+    let (binary_path, _) = active_runtime_paths();
     let mut child = launch_child(
+        &binary_path,
         data_dir,
         *child_uid,
         &session_child,
