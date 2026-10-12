@@ -139,8 +139,8 @@ struct Cookies {
 #[serde(rename_all = "camelCase")]
 struct SessionStatus {
     state: String,
-    since: Option<i64>,
-    last_chunk_at: Option<i64>,
+    since_ms: Option<i64>,
+    last_chunk_at_ms: Option<i64>,
     last_error: Option<String>,
 }
 
@@ -827,7 +827,7 @@ async fn flush_rows(
     *dropped_rows = 0;
     *pending = None;
     let mut status = status.lock().unwrap_or_else(|p| p.into_inner());
-    status.last_chunk_at = Some(now_ms());
+    status.last_chunk_at_ms = Some(now_ms());
     status.last_error = None;
     Ok(())
 }
@@ -1120,8 +1120,8 @@ async fn status(
                     codes::COLLECTOR_UNAVAILABLE
                 }
                 .into(),
-                since: None,
-                last_chunk_at: None,
+                since_ms: None,
+                last_chunk_at_ms: None,
                 last_error: (!available).then(|| codes::COLLECTOR_UNAVAILABLE.into()),
             }
         });
@@ -1237,8 +1237,8 @@ async fn unlock(
     ));
     let status = Arc::new(Mutex::new(SessionStatus {
         state: "starting".into(),
-        since: Some(now_ms()),
-        last_chunk_at: None,
+        since_ms: Some(now_ms()),
+        last_chunk_at_ms: None,
         last_error: None,
     }));
     let (stop, receiver) = oneshot::channel();
