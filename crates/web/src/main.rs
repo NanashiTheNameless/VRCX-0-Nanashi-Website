@@ -345,6 +345,8 @@ fn make_response(app: &App, path: &str, bytes: Vec<u8>) -> Response {
     headers.insert("content-security-policy", app.csp.clone());
     let cache = if path.trim_start_matches('/').starts_with("assets/") {
         "public, max-age=31536000, immutable"
+    } else if path.trim_start_matches('/') == "index.html" {
+        "no-cache, no-transform"
     } else {
         "no-cache"
     };

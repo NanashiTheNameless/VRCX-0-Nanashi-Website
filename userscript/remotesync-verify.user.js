@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRCX-0-Nanashi website check
 // @namespace    https://github.com/NanashiTheNameless/VRCX-0-Nanashi-Website
-// @version      1.0.0
+// @version      1.0.1
 // @description  Checks in your own browser that the RemoteSync website runs the official unmodified code and whether it is the official instance. Shows the result at the top of the page. It never blocks the page. Install it from the source repository, not from the website it checks.
 // @match        https://vrcx.namelessnanashi.dev/*
 // @run-at       document-start
@@ -30,7 +30,11 @@
   }
 
   async function load(path, cache) {
-    const response = await fetch(path, { cache, credentials: 'omit', redirect: 'error' })
+    const response = await fetch(new URL(path, location.origin), {
+      cache,
+      credentials: 'omit',
+      redirect: 'error',
+    })
     if (response.status === 404) return null
     if (!response.ok) throw new Error(`${path} returned ${response.status}`)
     return new Uint8Array(await response.arrayBuffer())
