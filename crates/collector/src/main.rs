@@ -636,9 +636,12 @@ struct ChildSnapshot {
     instances: Vec<LiveInstance>,
 }
 
-async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
     let mut prefix = [0_u8; 4];
-    reader.read_exact(&mut prefix).await?;
+    if reader.read(&mut prefix[..1]).await? == 0 {
+        return Ok(None);
+    }
+    reader.read_exact(&mut prefix[1..]).await?;
     let len = u32::from_be_bytes(prefix) as usize;
     if len == 0 || len > MAX_FRAME {
         return Err(std::io::Error::new(
@@ -648,7 +651,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec
     }
     let mut frame = vec![0; len];
     reader.read_exact(&mut frame).await?;
-    Ok(frame)
+    Ok(Some(frame))
 }
 
 async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, bytes: &[u8]) -> std::io::Result<()> {
@@ -679,7 +682,10 @@ async fn control(
     write_frame(stream, &bytes)
         .await
         .map_err(|e| e.to_string())?;
-    let response = read_frame(stream).await.map_err(|e| e.to_string())?;
+    let response = read_frame(stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "child closed the control stream".to_owned())?;
     let value: serde_json::Value = from_cbor(&response)?;
     if value["id"].as_u64() != Some(id) || value["v"].as_u64() != Some(1) {
         return Err("invalid child control response identity".into());
@@ -1014,14 +1020,17 @@ async fn run_child_inner(
         tokio::select! {
             _ = &mut *stop => { break; }
             result = child.wait() => {
-                return Err(match result {
-                    Ok(status) if status.code() == Some(COLLECTOR_UNAVAILABLE_EXIT_CODE) => codes::COLLECTOR_UNAVAILABLE.into(),
-                    Ok(status) => format!("headless runtime exited: {status}"),
-                    Err(error) => error.to_string(),
-                });
+                return Err(child_exit_error(result));
             }
             result = read_frame(&mut rows_stream), if batch.pending.is_none() => {
-                let frame = result.map_err(|e| format!("read child row: {e}"))?;
+                let frame = match result {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => return Err(child_exit_error(child.wait().await)),
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        return Err(child_exit_error(child.wait().await));
+                    }
+                    Err(error) => return Err(format!("read child row: {error}")),
+                };
                 let row: ChildRow = from_cbor(&frame)?;
                 if row.v != 1 { return Err("unsupported child row version".into()); }
                 if row.row_id <= batch.last_seen_row_id { return Err("child row ids must increase".into()); }
@@ -1055,6 +1064,16 @@ async fn run_child_inner(
     let _ = child.kill().await;
     let _ = flush_rows(&flush_context, &mut batch, &mut control_stream, status).await;
     Ok(())
+}
+
+fn child_exit_error(result: std::io::Result<std::process::ExitStatus>) -> String {
+    match result {
+        Ok(status) if status.code() == Some(COLLECTOR_UNAVAILABLE_EXIT_CODE) => {
+            codes::COLLECTOR_UNAVAILABLE.into()
+        }
+        Ok(status) => format!("headless runtime exited: {status}"),
+        Err(error) => error.to_string(),
+    }
 }
 
 async fn capabilities(State(state): State<Shared>) -> axum::Json<Capabilities> {
