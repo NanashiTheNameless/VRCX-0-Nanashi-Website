@@ -7,7 +7,7 @@ export type Envelope = {
   envelopeId: string
   label: string
   createdAtMs: number
-  lock: { kind: 'passphrase'; cost: { mKib: number; t: number; p: number }; salt: string; generated: boolean } | { kind: 'passkey-prf'; credentialId: string; prfSalt: string }
+  lock: { kind: 'passphrase'; cost: { mKib: number; t: number; p: number }; salt: string; generated: boolean }
   nonce: string
   ciphertext: string
 }
@@ -116,61 +116,6 @@ export async function openPassphraseEnvelope(accountId: string, envelope: Envelo
   if (envelope.v !== 1 || envelope.lock.kind !== 'passphrase') throw new Error('This envelope type is not supported by the website yet.')
   const key = await kek(passphrase, unb64url(envelope.lock.salt), envelope.lock.cost, envelope.lock.generated)
   const secret = xchacha20poly1305(key, unb64url(envelope.nonce), aad(accountId, envelope.envelopeId)).decrypt(unb64url(envelope.ciphertext))
-  if (secret.byteLength !== 32) throw new Error('The decrypted sync key has an invalid length.')
-  return Array.from(secret, b => b.toString(16).padStart(2, '0')).join('')
-}
-
-export async function createPasskeyEnvelope(accountId: string, syncKeyHex: string, label: string, credentialId: Uint8Array, prfSalt: Uint8Array, prfOutput: Uint8Array): Promise<Envelope> {
-  if (!label.trim() || label.length > 64) throw new Error('Give this key envelope a label of 1 to 64 characters.')
-  if (credentialId.length < 1 || prfSalt.length !== 32 || prfOutput.length !== 32) throw new Error('The passkey did not return a valid PRF result.')
-  const secret = parseSecret(syncKeyHex)
-  const id = b64url(randomBytes(16))
-  const nonce = randomBytes(24)
-  const key = await deriveKek(prfOutput)
-  const ciphertext = xchacha20poly1305(key, nonce, encoder.encode(`remotesync/v1/envelope\0${accountId}\0${id}\0passkey-prf\0`)).encrypt(secret)
-  return { v: 1, envelopeId: id, label: label.trim(), createdAtMs: Date.now(), lock: { kind: 'passkey-prf', credentialId: b64url(credentialId), prfSalt: b64url(prfSalt) }, nonce: b64url(nonce), ciphertext: b64url(ciphertext) }
-}
-
-export async function createPrfCredential(email: string) {
-  if (!window.isSecureContext || !navigator.credentials) throw new Error('Passkeys require a secure HTTPS website and a supported browser.')
-  const prfSalt = randomBytes(32)
-  const credential = await navigator.credentials.create({ publicKey: {
-    challenge: randomBytes(32).buffer as ArrayBuffer,
-    rp: { name: 'RemoteSync' },
-    user: { id: randomBytes(16).buffer as ArrayBuffer, name: email, displayName: email },
-    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
-    timeout: 60_000,
-    extensions: { prf: { eval: { first: prfSalt.buffer as ArrayBuffer } } },
-  } as PublicKeyCredentialCreationOptions }) as PublicKeyCredential | null
-  if (!credential) throw new Error('Passkey creation was cancelled.')
-  const assertion = await navigator.credentials.get({ publicKey: {
-    challenge: randomBytes(32).buffer as ArrayBuffer,
-    allowCredentials: [{ type: 'public-key', id: credential.rawId }],
-    userVerification: 'required',
-    timeout: 60_000,
-    extensions: { prf: { eval: { first: prfSalt.buffer as ArrayBuffer } } },
-  } as PublicKeyCredentialRequestOptions }) as PublicKeyCredential | null
-  const first = (assertion?.getClientExtensionResults() as any)?.prf?.results?.first as ArrayBuffer | undefined
-  if (!assertion || !first || first.byteLength !== 32) throw new Error('This passkey or authenticator does not support the WebAuthn PRF extension.')
-  return { credentialId: new Uint8Array(credential.rawId), prfSalt, prfOutput: new Uint8Array(first) }
-}
-
-export async function openPasskeyEnvelope(accountId: string, envelope: Envelope) {
-  if (envelope.v !== 1 || envelope.lock.kind !== 'passkey-prf') throw new Error('This is not a passkey envelope.')
-  const prfSalt = unb64url(envelope.lock.prfSalt)
-  if (prfSalt.length !== 32) throw new Error('The stored passkey salt is invalid.')
-  const assertion = await navigator.credentials.get({ publicKey: {
-    challenge: randomBytes(32).buffer as ArrayBuffer,
-    allowCredentials: [{ type: 'public-key', id: unb64url(envelope.lock.credentialId) }],
-    userVerification: 'required',
-    timeout: 60_000,
-    extensions: { prf: { eval: { first: prfSalt.buffer as ArrayBuffer } } },
-  } as PublicKeyCredentialRequestOptions }) as PublicKeyCredential | null
-  const first = (assertion?.getClientExtensionResults() as any)?.prf?.results?.first as ArrayBuffer | undefined
-  if (!first || first.byteLength !== 32) throw new Error('The passkey did not return a PRF result.')
-  const key = await deriveKek(new Uint8Array(first))
-  const secret = xchacha20poly1305(key, unb64url(envelope.nonce), encoder.encode(`remotesync/v1/envelope\0${accountId}\0${envelope.envelopeId}\0passkey-prf\0`)).decrypt(unb64url(envelope.ciphertext))
   if (secret.byteLength !== 32) throw new Error('The decrypted sync key has an invalid length.')
   return Array.from(secret, b => b.toString(16).padStart(2, '0')).join('')
 }

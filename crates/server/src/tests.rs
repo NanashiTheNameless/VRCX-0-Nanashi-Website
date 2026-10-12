@@ -730,26 +730,38 @@ async fn recovery_codes_are_single_use_for_reauth() {
 }
 
 #[tokio::test]
-async fn owners_have_no_usage_limits() {
+async fn owners_respect_configured_usage_limits() {
     let h = Harness::new(None);
     let account = h.account(Some(100));
     h.state.registry().set_max_vaults(&account, 1).unwrap();
+    h.state
+        .registry()
+        .set_collector_allowed(&account, false)
+        .unwrap();
     h.state
         .registry()
         .set_role(&account, crate::db::registry::Role::Owner)
         .unwrap();
     let token = h.token(&account, ALL);
     let info = h.get("/v1/account", Some(&token)).await.json();
-    assert_eq!(info["quotaBytes"], Value::Null);
-    assert_eq!(info["collectorAllowed"], true);
-    for _ in 0..2 {
+    assert_eq!(info["quotaBytes"], 100);
+    assert_eq!(info["collectorAllowed"], false);
+    for index in 0..2 {
         let vault_id = VaultId::random().unwrap();
         let keys = VaultKeys::derive(&SyncSecret::generate().unwrap(), vault_id).public();
         let body = json!({"vaultId": vault_id, "vaultPk": b64::encode(keys.vault_pk.as_bytes()), "manifestPk": b64::encode(keys.manifest_pk.as_bytes())});
+        let created = h.post_json("/v1/vaults", Some(&token), body).await;
         assert_eq!(
-            h.post_json("/v1/vaults", Some(&token), body).await.status,
-            StatusCode::CREATED
+            created.status,
+            if index == 0 {
+                StatusCode::CREATED
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
         );
+        if index != 0 {
+            continue;
+        }
         let path = format!("/v1/vaults/{vault_id}/chunks");
         let chunk_id = vrcx_0_nanashi_website_protocol::ids::ChunkId::random()
             .unwrap()
@@ -765,12 +777,9 @@ async fn owners_have_no_usage_limits() {
             .await;
         assert_eq!(
             reply.status,
-            StatusCode::CREATED,
-            "quota of 100 bytes is ignored for owners"
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "owners must respect their configured quota"
         );
-    }
-    for _ in 0..25 {
-        h.token(&account, &[Scope::Sync]);
     }
 }
 
@@ -2156,7 +2165,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
     let h = Harness::new(None);
     let (account, session) = web_session(&h, true);
     let secret = SyncSecret::generate().unwrap();
-    let prf = envelope::seal_with_prf(
+    let legacy_passkey = envelope::seal_with_prf(
         &secret,
         &account,
         "Laptop passkey",
@@ -2166,7 +2175,28 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
         0,
     )
     .unwrap();
-    let body = serde_json::to_string(&prf).unwrap();
+    let rejected = h
+        .post_json(
+            "/web/v1/envelopes",
+            Some(&session),
+            serde_json::to_value(&legacy_passkey).unwrap(),
+        )
+        .await;
+    assert_eq!(
+        rejected.status,
+        StatusCode::BAD_REQUEST,
+        "new passkey envelopes are disabled"
+    );
+    let passphrase = envelope::seal_with_passphrase(
+        &secret,
+        &account,
+        "Laptop recovery",
+        "a long recovery phrase",
+        false,
+        0,
+    )
+    .unwrap();
+    let body = serde_json::to_string(&passphrase).unwrap();
     let reply = h
         .call(
             Method::POST,
@@ -2178,13 +2208,13 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     let list = h.get("/web/v1/envelopes", Some(&session)).await.json();
-    assert_eq!(list[0]["kind"], "passkey-prf");
-    assert_eq!(list[0]["label"], "Laptop passkey");
-    let path = format!("/web/v1/envelopes/{}", prf.envelope_id);
+    assert_eq!(list[0]["kind"], "passphrase");
+    assert_eq!(list[0]["label"], "Laptop recovery");
+    let path = format!("/web/v1/envelopes/{}", passphrase.envelope_id);
     let fetched: envelope::KeyEnvelope =
         serde_json::from_slice(&h.get(&path, Some(&session)).await.body).unwrap();
     assert_eq!(
-        envelope::open_with_prf(&fetched, &account, &[2; 32]).unwrap(),
+        envelope::open_with_passphrase(&fetched, &account, "a long recovery phrase").unwrap(),
         secret,
         "the server returns it unchanged"
     );
@@ -2197,7 +2227,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
         "10 downloads per day"
     );
 
-    let mut weak = serde_json::to_value(&prf).unwrap();
+    let mut weak = serde_json::to_value(&passphrase).unwrap();
     weak["lock"] = json!({"kind": "passphrase", "cost": {"mKib": 8, "t": 1, "p": 1}, "salt": b64::encode(&[0; 16]), "generated": false});
     weak["envelopeId"] = json!(b64::encode(&[9; 16]));
     let reply = h

@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react'
 import 'altcha/external'
 import 'altcha/altcha.css'
 import type {} from 'altcha/types/react'
-import { Activity, Database, Globe, KeyRound, Link2, LogOut, Shield, Users } from 'lucide-react'
-import { createPasskeyEnvelope, createPassphraseEnvelope, createPrfCredential, generatePassphrase, generateWordPassphrase, normalizeSyncKey, openPasskeyEnvelope, openPassphraseEnvelope, type Envelope } from './envelopes'
+import { Activity, Database, Globe, KeyRound, Link2, LogOut, Radio, Shield, Users } from 'lucide-react'
+import { createPassphraseEnvelope, generatePassphrase, generateWordPassphrase, normalizeSyncKey, openPassphraseEnvelope } from './envelopes'
 import { ApiError, configPromise, getToken, request, tokenKey } from './api'
 import { HistoryBrowser } from './history'
+import { CollectorPage } from './collector'
 import { AccountSecurity, ChosenPassphrase, Clients, Collections, DeviceTransfer, KeyUnlock, Pairing, RecoveryCodes, Tokens, TotpSetup, YourData } from './account'
 import { forgetProtocolWorker, unlockProtocolWorker } from './protocol'
 import { forgetVerification, noteReauthFailure, useReauth } from './reauth'
@@ -27,6 +28,7 @@ const PAGES = [
   ['data', Database, 'Your data'],
   ['collections', Globe, 'Collections'],
   ['security', KeyRound, 'Security'],
+  ['collector', Radio, 'Collector'],
   ['admin', Shield, 'Administration'],
 ] as const
 type PageId = typeof PAGES[number][0]
@@ -67,12 +69,14 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false)
   const [browserKeyUnlocked, setBrowserKeyUnlocked] = useState(false)
   const [buildInfo, setBuildInfo] = useState<Build | null>(null)
+  const [envelopes, setEnvelopes] = useState<any[] | null>(null)
 
   const dropSession = () => {
     clearSession()
     setToken(null)
     setMe(null)
     setBrowserKeyUnlocked(false)
+    setEnvelopes(null)
     void forgetProtocolWorker()
   }
 
@@ -102,7 +106,7 @@ export default function Dashboard() {
   }, [])
 
   const isAdmin = me ? ['admin', 'owner'].includes(me.role) : false
-  const pages = PAGES.filter(([id]) => id !== 'admin' || isAdmin)
+  const pages = PAGES.filter(([id]) => id !== 'admin' ? id !== 'collector' || Boolean(me?.collectorAllowed) : isAdmin)
   const current = pages.find(([id]) => id === page) ?? pages[0]
   const signedIn = Boolean(token && me)
   useTitle(!signedIn ? 'Sign in' : me!.state === 'active' ? current[2] : 'Account')
@@ -128,6 +132,7 @@ export default function Dashboard() {
     storage.setItem(tokenKey, session)
     if (location.pathname !== '/dashboard' && location.pathname !== '/pair') history.replaceState(null, '', '/dashboard')
     setError(''); setNotice(''); setPage(pageFromLocation())
+    setEnvelopes(null)
     setToken(session)
     if (recoveryCodes?.length) setCodes(recoveryCodes)
   }
@@ -204,11 +209,12 @@ export default function Dashboard() {
                 <div className="security-grid">
                   <KeyUnlock act={act} unlocked={browserKeyUnlocked} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} />
                   <DeviceTransfer act={act} accountId={me.accountId} unlocked={browserKeyUnlocked} twofaMethod={me.twofaMethod} onReceived={() => setBrowserKeyUnlocked(true)} />
-                  <Security me={me} act={act} setNotice={setNotice} showCodes={setCodes} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} />
+                  <Security me={me} act={act} setNotice={setNotice} showCodes={setCodes} onUnlock={unlockBrowserKey} onForget={forgetBrowserKey} envelopes={envelopes} setEnvelopes={setEnvelopes} />
                   <ChosenPassphrase act={act} accountId={me.accountId} twofaMethod={me.twofaMethod} onSaved={() => setNotice('Envelope saved. Remember this passphrase; it cannot be recovered.')} />
                 </div>
               </>
             )}
+            {id === 'collector' && <CollectorPage accountId={me.accountId} allowed={me.collectorAllowed} unlocked={browserKeyUnlocked} act={act} />}
             {id === 'admin' && <Admin act={act} available={me.adminAvailable} actorRole={me.role} actorId={me.accountId} />}
           </>
         )}
@@ -393,23 +399,22 @@ function AuthForm({ error, keep, setKeep, onAuthenticated }: { error: string; ke
 function Overview({me,keyUnlocked,onForget}:{me:Me,keyUnlocked:boolean,onForget:()=>Promise<void>}) { const usage=me.usageBytes;const pct=me.quotaBytes?Math.min(100,usage/me.quotaBytes*100):0;return <>{me.recoveryCodesLeft<=2&&<div className="alert error">{me.recoveryCodesLeft===0?'No recovery codes remain.':`Only ${me.recoveryCodesLeft} recovery ${me.recoveryCodesLeft===1?'code remains':'codes remain'}.`} Generate a fresh set under <a href="#security">Security</a>.</div>}<div className="hero"><div><div className="eyebrow">REMOTESYNC</div><h2>{me.syncAllowed?'Your account is ready':'Sync is disabled for this account'}</h2><p>{me.syncAllowed?'RemoteSync keeps your VRCX-0-Nanashi history encrypted on the server and available to your devices. Pair the app under Pair device, then unlock your key under Security to read history here.':'An administrator has turned off history sync for this account. Shared collections still work.'}</p></div><Activity size={48} aria-hidden="true"/></div><div className="cards"><article className="card"><div className="card-title">Storage usage</div><strong>{formatBytes(usage)}</strong><div className="progress"><i style={{width:`${pct}%`}}/></div><small>{me.quotaBytes?`of ${formatBytes(me.quotaBytes)} limit`:'No storage limit'}</small></article><article className="card"><div className="card-title">RemoteSync access</div><strong>{me.syncAllowed?'Enabled':'Disabled'}</strong><small>{me.collectorAllowed?'Collector access is allowed':'Collector access is disabled'}</small></article><article className="card"><div className="card-title">Security</div><strong>{me.twofaMethod==='totp'?'Authenticator app':me.twofaMethod==='email'?'Email codes':'Not set up'}</strong><small>{me.recoveryCodesLeft} recovery codes remaining</small></article></div>{keyUnlocked&&<div className="key-status">Sync key is unlocked in this tab's protocol Worker. <button onClick={()=>void onForget()}>Forget key</button></div>}<HistoryBrowser unlocked={keyUnlocked} accountId={me.accountId}/></>}
 
 
-function Security({me,act,setNotice,showCodes,onUnlock,onForget}:{me:Me,act:(f:()=>Promise<void>)=>Promise<void>,setNotice:(s:string)=>void,showCodes:(codes:string[])=>void,onUnlock:(key:string)=>Promise<void>,onForget:()=>Promise<void>}) {
-  const verification=useReauth(me.twofaMethod); const [envelopes,setEnvelopes]=useState<any[]|null>(null)
-  const [syncKey,setSyncKey]=useState(''); const [label,setLabel]=useState('Browser recovery'); const [newPassphrase,setNewPassphrase]=useState(''); const [unlockId,setUnlockId]=useState(''); const [unlockEnvelope,setUnlockEnvelope]=useState<Envelope|null>(null); const [unlockPassphrase,setUnlockPassphrase]=useState(''); const [keyUnlocked,setKeyUnlocked]=useState(false); const [savedPassphrase,setSavedPassphrase]=useState('')
+function Security({me,act,setNotice,showCodes,onUnlock,onForget,envelopes,setEnvelopes}:{me:Me,act:(f:()=>Promise<void>)=>Promise<void>,setNotice:(s:string)=>void,showCodes:(codes:string[])=>void,onUnlock:(key:string)=>Promise<void>,onForget:()=>Promise<void>,envelopes:any[]|null,setEnvelopes:(value:any[]|null)=>void}) {
+  const verification=useReauth(me.twofaMethod)
+  const [syncKey,setSyncKey]=useState(''); const [label,setLabel]=useState('Browser recovery'); const [newPassphrase,setNewPassphrase]=useState(''); const [unlockId,setUnlockId]=useState(''); const [unlockPassphrase,setUnlockPassphrase]=useState(''); const [keyUnlocked,setKeyUnlocked]=useState(false); const [savedPassphrase,setSavedPassphrase]=useState('')
   const reauth=verification.confirm
   const refreshEnvelopes=async()=>{await reauth();setEnvelopes(await request<any[]>('/envelopes'))}
+  useEffect(()=>{let active=true;request<any[]>('/envelopes').then(value=>{if(active)setEnvelopes(value)}).catch(()=>{});return()=>{active=false}},[setEnvelopes])
   return <><article className="card"><h2>Recovery codes</h2><p>You have {me.recoveryCodesLeft} recovery {me.recoveryCodesLeft===1?'code':'codes'} remaining.</p><p className="muted">Generating a new set replaces the old codes. Uses the verification code entered at the top of this page.</p><button className="primary" disabled={!verification.ready} onClick={()=>act(async()=>{await reauth();const data=await request<{recoveryCodes:string[]}>('/recovery-codes',{method:'POST'});showCodes(data.recoveryCodes)})}>Generate new codes</button></article>
     <article className="card"><h2>Stored key envelopes</h2><p className="muted">Create an encrypted browser recovery envelope from your 64-character sync key. The passphrase is generated on this device and never sent to the server. Save both the passphrase and key somewhere safe.</p>
       <label>Sync key (64 hex characters or rss1 recovery string)<input type="password" autoComplete="off" value={syncKey} onChange={e=>setSyncKey(e.target.value)}/></label>
       <label>Envelope label<input maxLength={64} value={label} onChange={e=>setLabel(e.target.value)}/></label>
       <div className="actions"><button onClick={()=>setNewPassphrase(generatePassphrase())}>Generate passphrase</button><button onClick={()=>void generateWordPassphrase().then(setNewPassphrase)}>Generate 7 words</button>{newPassphrase&&<code className="secret-code">{newPassphrase}</code>}</div>
       {newPassphrase&&<button className="primary" onClick={()=>act(async()=>{const normalizedKey=normalizeSyncKey(syncKey);await reauth();const envelope=await createPassphraseEnvelope(me.accountId,normalizedKey,label,newPassphrase);await request('/envelopes',{method:'POST',body:JSON.stringify(envelope)});await onUnlock(normalizedKey);setKeyUnlocked(true);setSyncKey('');setEnvelopes(await request<any[]>('/envelopes'));setSavedPassphrase(newPassphrase);setNotice('Envelope saved.');setNewPassphrase('')})}>Encrypt and save envelope</button>}
-      <button onClick={()=>act(async()=>{const normalizedKey=normalizeSyncKey(syncKey);if(!label.trim()||label.length>64)throw new Error('Give this key envelope a label of 1 to 64 characters.');const prf=await createPrfCredential(me.email);await reauth();const envelope=await createPasskeyEnvelope(me.accountId,normalizedKey,label,prf.credentialId,prf.prfSalt,prf.prfOutput);await request('/envelopes',{method:'POST',body:JSON.stringify(envelope)});await onUnlock(normalizedKey);setKeyUnlocked(true);setSyncKey('');setEnvelopes(await request<any[]>('/envelopes'));setNotice('Passkey envelope saved. The passkey is required to unlock this sync key.')})}>Create passkey envelope</button>
       <p className="muted">Saving, loading and deleting envelopes use the verification code entered at the top of this page.</p>
       <p className="muted">Passphrase envelopes use Argon2id (256 MiB, 3 passes) and XChaCha20-Poly1305. A wrong passphrase or modified envelope fails to decrypt.</p>
-      <button disabled={!verification.ready} onClick={()=>act(refreshEnvelopes)}>Load stored envelopes</button>{envelopes&&<div className="envelope-list">{envelopes.length===0?<p className="muted">No stored envelopes.</p>:envelopes.map((item:any)=><div className="envelope-row" key={item.envelopeId}><span><b>{item.label||'Unnamed envelope'}</b><small>{item.kind} · Added {date(item.createdAtMs)}</small></span><div className="actions">{item.kind==='passphrase'&&<button onClick={()=>{setUnlockId(item.envelopeId);setUnlockEnvelope(null)}}>Unlock</button>}{item.kind==='passkey-prf'&&<button onClick={()=>act(async()=>{await reauth();setUnlockEnvelope(await request<Envelope>(`/envelopes/${encodeURIComponent(item.envelopeId)}`));setUnlockId(item.envelopeId)})}>Unlock with passkey</button>}<button className="danger" onClick={()=>{if(confirm(`Delete "${item.label||'this envelope'}"?`))act(async()=>{await reauth();await request(`/envelopes/${encodeURIComponent(item.envelopeId)}`,{method:'DELETE'});setEnvelopes(await request<any[]>('/envelopes'))})}}>Delete</button></div></div>)}</div>}
-      {unlockId&&!unlockEnvelope&&<div className="unlock-box"><label>Envelope passphrase<input type="password" autoComplete="off" value={unlockPassphrase} onChange={e=>setUnlockPassphrase(e.target.value)}/></label><button className="primary" onClick={()=>act(async()=>{await reauth();const envelope=await request<Envelope>(`/envelopes/${encodeURIComponent(unlockId)}`);const key=await openPassphraseEnvelope(me.accountId,envelope,unlockPassphrase);await onUnlock(key);setKeyUnlocked(true);setUnlockPassphrase('')})}>Decrypt sync key</button></div>}
-      {unlockEnvelope&&<div className="unlock-box"><p>Use the passkey created for "{unlockEnvelope.label}".</p><button className="primary" onClick={()=>act(async()=>{const key=await openPasskeyEnvelope(me.accountId,unlockEnvelope);await onUnlock(key);setKeyUnlocked(true);setUnlockEnvelope(null)})}>Use passkey</button></div>}
+      <button disabled={!verification.ready} onClick={()=>act(refreshEnvelopes)}>Load stored envelopes</button>{envelopes&&<div className="envelope-list">{envelopes.length===0?<p className="muted">No stored envelopes.</p>:envelopes.map((item:any)=><div className="envelope-row" key={item.envelopeId}><span><b>{item.label||'Unnamed envelope'}</b><small>{item.kind==='passkey-prf'?'Legacy passkey envelope · unsupported':item.kind} · Added {date(item.createdAtMs)}</small></span><div className="actions">{item.kind==='passphrase'&&<button onClick={()=>setUnlockId(item.envelopeId)}>Unlock</button>}<button className="danger" onClick={()=>{if(confirm(`Delete "${item.label||'this envelope'}"?`))act(async()=>{await reauth();await request(`/envelopes/${encodeURIComponent(item.envelopeId)}`,{method:'DELETE'});setEnvelopes(await request<any[]>('/envelopes'))})}}>Delete</button></div></div>)}</div>}
+      {unlockId&&<div className="unlock-box"><label>Envelope passphrase<input type="password" autoComplete="off" value={unlockPassphrase} onChange={e=>setUnlockPassphrase(e.target.value)}/></label><button className="primary" onClick={()=>act(async()=>{await reauth();const envelope=await request<any>(`/envelopes/${encodeURIComponent(unlockId)}`);const key=await openPassphraseEnvelope(me.accountId,envelope,unlockPassphrase);await onUnlock(key);setKeyUnlocked(true);setUnlockPassphrase('')})}>Decrypt sync key</button></div>}
       {savedPassphrase&&<div className="secret-box"><b>Store this passphrase now</b><code className="secret-code">{savedPassphrase}</code><small>It unlocks the envelope you just saved and cannot be recovered or shown again.</small><div className="button-row"><button onClick={()=>void navigator.clipboard.writeText(savedPassphrase)}>Copy</button><button onClick={()=>setSavedPassphrase('')}>I saved it</button></div></div>}
       {keyUnlocked&&<div className="alert">Sync key is unlocked in the protocol Worker. The page does not retain the decrypted key. <button onClick={()=>void onForget().then(()=>setKeyUnlocked(false))}>Forget key</button></div>}
       {envelopes&&envelopes.length>0&&<button className="danger" onClick={()=>{if(confirm('Delete every stored key envelope?'))act(async()=>{await reauth();await request('/envelopes',{method:'DELETE'});setEnvelopes([])})}}>Delete all envelopes</button>}</article></>
@@ -438,7 +443,7 @@ function Admin({act,available,actorRole,actorId}:{act:(f:()=>Promise<void>)=>Pro
 function AdminAccount({account:a,actorRole,actorId,update,act,refresh}:{account:any,actorRole:string,actorId:string,update:(a:any,path:string,body:any)=>Promise<void>,act:(f:()=>Promise<void>)=>Promise<void>,refresh:()=>Promise<void>}) {
   const [quota,setQuota]=useState(a.quotaBytes==null?'':String(a.quotaBytes)); const [vaults,setVaults]=useState(String(a.maxVaults)); const [confirmEmail,setConfirmEmail]=useState('')
   const protectedOwner=a.role==='owner'; const canManage=!protectedOwner&&(a.role!=='admin'||actorRole==='owner')
-  const canManageSettings=canManage||(a.accountId===actorId&&a.role==='admin')
+  const canManageSettings=canManage||(a.accountId===actorId&&a.role==='admin')||(actorRole==='owner'&&a.role==='owner')
   return <article className="card admin-account"><div className="section-heading"><div><b>{a.email}</b><div className="muted">{a.state} · {a.role} · {formatBytes(a.usageBytes)} / {a.quotaBytes!=null?formatBytes(a.quotaBytes):'unlimited'} · {a.maxVaults} vaults · Created {date(a.createdAtMs)}</div></div><div className="actions">{a.state==='pending'&&<><button onClick={()=>act(async()=>{await request(`/admin/accounts/${a.accountId}/approve`,{method:'POST'});await refresh()})}>Approve</button><button className="danger" onClick={()=>{if(confirm(`Deny the account request from ${a.email}?`))void act(async()=>{await request(`/admin/accounts/${a.accountId}/deny`,{method:'POST'});await refresh()})}}>Deny</button></>}{canManage&&a.state!=='pending'&&<button onClick={()=>act(async()=>{await request(`/admin/accounts/${a.accountId}/${a.state==='suspended'?'resume':'suspend'}`,{method:'POST'});await refresh()})}>{a.state==='suspended'?'Resume':'Suspend'}</button>}</div></div>
     {a.signupMessage&&<p className="muted">Signup request: {a.signupMessage}</p>}
     {canManage&&<div className="admin-controls">{actorRole==='owner'&&<><button onClick={()=>update(a,'role',{role:a.role==='admin'?'user':'admin'})}>{a.role==='admin'?'Remove admin':'Make admin'}</button><button onClick={()=>{if(confirm(`Reset two-factor authentication for ${a.email}?`))void act(async()=>{await request(`/admin/accounts/${a.accountId}/reset-2fa`,{method:'POST'});await refresh()})}}>Reset 2FA</button><button className="danger" onClick={()=>{if(confirm(`Permanently delete ${a.email} and all of its data?`))act(async()=>{await request(`/admin/accounts/${a.accountId}`,{method:'DELETE'});await refresh()})}}>Delete account</button></>}</div>}

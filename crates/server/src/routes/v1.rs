@@ -1265,7 +1265,7 @@ pub(crate) async fn collector_store_chunk(
     Ok((StatusCode::CREATED, Json(ChunkStored { seq: insert? })))
 }
 
-async fn collector_capabilities(state: &Shared) -> Option<CollectorCapabilities> {
+pub(crate) async fn collector_capabilities(state: &Shared) -> Option<CollectorCapabilities> {
     let (status, body) = crate::uds::call(
         &state.config.collector_socket,
         Method::GET,

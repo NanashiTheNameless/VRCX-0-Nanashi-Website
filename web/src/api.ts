@@ -30,6 +30,11 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   return fetch(`${config.apiOrigin}/web/v1${path}`, { ...init, headers })
 }
 
+export async function apiOriginFetch(path: string, init: RequestInit = {}) {
+  const config = await configPromise
+  return fetch(`${config.apiOrigin}${path}`, init)
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('content-type', 'application/json')

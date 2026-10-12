@@ -222,23 +222,15 @@ impl AccountRow {
     }
 
     pub fn effective_quota(&self) -> Option<u64> {
-        if self.is_owner() {
-            None
-        } else {
-            self.quota_bytes
-        }
+        self.quota_bytes
     }
 
     pub fn effective_max_vaults(&self) -> u32 {
-        if self.is_owner() {
-            u32::MAX
-        } else {
-            self.max_vaults
-        }
+        self.max_vaults
     }
 
     pub fn effective_collector_allowed(&self) -> bool {
-        self.sync_allowed && (self.is_owner() || self.collector_allowed)
+        self.sync_allowed && self.collector_allowed
     }
 }
 

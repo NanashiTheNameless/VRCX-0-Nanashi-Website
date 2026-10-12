@@ -609,7 +609,7 @@ export function ChosenPassphrase({ act, accountId, twofaMethod, onSaved }: { act
   return (
     <article className="card">
       <h2>Envelope with your own passphrase</h2>
-      <p className="muted">Stores an encrypted copy of your key on the server, locked with a passphrase you choose. Whoever runs the server could try to guess that passphrase offline, so only its strength protects your history. A passkey or generated passphrase does not have this weakness.</p>
+      <p className="muted">Stores an encrypted copy of your key on the server, locked with a passphrase you choose. Whoever runs the server could try to guess that passphrase offline, so use a long, randomly generated passphrase.</p>
       <label>Sync key (64 hex characters or rss1 recovery string)<input type="password" autoComplete="off" value={syncKey} onChange={event => setSyncKey(event.target.value)} /></label>
       <label>Envelope label<input maxLength={64} value={label} onChange={event => setLabel(event.target.value)} /></label>
       <label>Passphrase<input type="password" autoComplete="new-password" value={passphrase} onChange={event => setPassphrase(event.target.value)} /></label>

@@ -1,4 +1,4 @@
-type RequestMessage = { id: number; type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention'; payload?: unknown }
+type RequestMessage = { id: number; type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock'; payload?: unknown }
 
 type WasmExports = {
   memory: WebAssembly.Memory
@@ -73,6 +73,7 @@ workerScope.onmessage = async (event: MessageEvent<RequestMessage>) => {
     if (!syncKeyHex) throw new Error('Unlock your key in this tab first.')
     if (event.data.type === 'transferSend') return reply(transfer('transferSeal', { syncKeyHex, ...input }))
     if (event.data.type === 'manifestInfo' || event.data.type === 'manifestRetention') return reply(openBatch(exports, { op: event.data.type, syncKeyHex, ...(event.data.payload as object) }, 'Vault settings could not be read'))
+    if (event.data.type === 'collectorSealUnlock') return reply(openBatch(exports, { op: 'collectorUnlockSeal', syncKeyHex, ...(event.data.payload as object) }, 'Collector unlock could not be sealed'))
     const payload = { ...(event.data.payload as object), syncKeyHex }
     if (event.data.type === 'live') Object.assign(payload, { op: 'openLive' })
     workerScope.postMessage({ id: event.data.id, result: openBatch(exports, payload) })

@@ -7,7 +7,9 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use data_encoding::{BASE64, BASE64_NOPAD};
 use serde::{Deserialize, Serialize};
-use vrcx_0_nanashi_website_protocol::api::{ClientKind, ReauthMethod, Scope, codes};
+use vrcx_0_nanashi_website_protocol::api::{
+    ClientKind, CollectorCapabilities, ReauthMethod, Scope, codes,
+};
 use vrcx_0_nanashi_website_protocol::b64;
 use vrcx_0_nanashi_website_protocol::ids::AccountId;
 use vrcx_0_nanashi_website_protocol::token::{self, TokenKind};
@@ -52,6 +54,7 @@ pub fn router() -> Router<Shared> {
         .route("/auth/reset/finish", post(reset_finish))
         .route("/session", delete(sign_out))
         .route("/me", get(me))
+        .route("/collector/capabilities", get(web_collector_capabilities))
         .route("/reauth", post(reauth))
         .route("/reauth/email-code", post(reauth_email_code))
         .route("/security/twofa/totp", post(twofa_totp_start))
@@ -203,6 +206,9 @@ fn admin_target(actor: &WebAuth, target: &AccountRow) -> ApiResult<()> {
 }
 
 fn admin_target_settings(actor: &WebAuth, target: &AccountRow) -> ApiResult<()> {
+    if actor.account.is_owner() && target.role == crate::db::registry::Role::Owner {
+        return Ok(());
+    }
     if actor.account.account_id == target.account_id
         && target.role == crate::db::registry::Role::Admin
     {
@@ -216,7 +222,7 @@ fn admin_account_json(account: AccountRow) -> serde_json::Value {
         "accountId": account.account_id, "email": account.email,
         "state": account.state.as_str(), "role": account.role.as_str(),
         "createdAtMs": account.created_at_ms, "usageBytes": account.usage_bytes,
-        "quotaBytes": account.effective_quota(), "maxVaults": account.max_vaults,
+        "quotaBytes": account.quota_bytes, "maxVaults": account.max_vaults,
         "collectorAllowed": account.effective_collector_allowed(),
         "syncAllowed": account.sync_allowed,
         "signupMessage": account.signup_message
@@ -1769,6 +1775,14 @@ struct Me {
     recent_totp_until_ms: i64,
 }
 
+async fn web_collector_capabilities(
+    State(state): State<Shared>,
+) -> ApiResult<Json<Option<CollectorCapabilities>>> {
+    Ok(Json(
+        crate::routes::v1::collector_capabilities(&state).await,
+    ))
+}
+
 async fn me(State(state): State<Shared>, auth: WebAuth) -> ApiResult<Json<Me>> {
     state
         .run(move |state| {
@@ -2318,6 +2332,14 @@ async fn create_envelope(
     auth.require_recent_auth()?;
     auth.require_sync_enabled()?;
     let envelope = validate_envelope(&body)?;
+    if matches!(
+        &envelope.lock,
+        vrcx_0_nanashi_website_protocol::envelope::EnvelopeLock::PasskeyPrf { .. }
+    ) {
+        return Err(ApiErr::bad_request(
+            "Passkey envelopes are no longer supported. Use a passphrase envelope.",
+        ));
+    }
     let email = auth.account.email.clone();
     state
         .run(move |state| {

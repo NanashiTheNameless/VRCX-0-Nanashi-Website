@@ -41,6 +41,8 @@ input:focus-visible, select:focus-visible { outline: none; border-color: var(--a
 input[type='checkbox'] { accent-color: var(--accent); }
 label { display: block; margin: 16px 0; color: #cacbd2; font-size: 12px; }
 label > small { display: block; margin-top: 6px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.form-grid label { margin: 0; }
 h1, h2, h3, h4, p { margin-top: 0; }
 h1 { margin-bottom: 4px; font-size: 25px; letter-spacing: -.04em; }
 h2 { margin-bottom: 8px; font-size: 17px; }
@@ -285,6 +287,7 @@ altcha-widget {
   .recovery-codes { columns: 1; }
 }
 @media (max-width: 600px) {
+  .form-grid { grid-template-columns: 1fr; }
   .landing-hero { flex-direction: column-reverse; align-items: flex-start; justify-content: center; gap: clamp(20px, 5vh, 40px); }
   .landing-logo { align-self: center; width: clamp(80px, min(34vw, 24vh), 180px); max-height: 28vh; }
   .landing-copy h1 { font-size: clamp(30px, 9vw, 46px); }

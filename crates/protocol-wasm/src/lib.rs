@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 use vrcx_0_nanashi_website_protocol::chunk::{self, ChunkHeader, SignerLookup};
-use vrcx_0_nanashi_website_protocol::ids::{ChunkId, VaultId};
+use vrcx_0_nanashi_website_protocol::ids::{AccountId, ChunkId, VaultId};
 use vrcx_0_nanashi_website_protocol::keys::{self, VaultKeys};
 use vrcx_0_nanashi_website_protocol::manifest::{self, Manifest};
 use vrcx_0_nanashi_website_protocol::secret::SyncSecret;
@@ -117,6 +117,9 @@ fn process(input: &[u8]) -> Vec<u8> {
             .map_err(|e| e.to_string())?;
             return serde_json::to_value(snapshot).map_err(|e| e.to_string());
         }
+        if value.get("op").and_then(serde_json::Value::as_str) == Some("collectorUnlockSeal") {
+            return collector_unlock_seal(value);
+        }
         if let Some(op) = value
             .get("op")
             .and_then(serde_json::Value::as_str)
@@ -166,6 +169,57 @@ fn process(input: &[u8]) -> Vec<u8> {
         Ok(opened) => serde_json::to_vec(&opened).unwrap_or_else(|e| error_json(&e.to_string())),
         Err(error) => error_json(&error),
     }
+}
+
+fn collector_unlock_seal(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let sync_key_hex = value
+        .get("syncKeyHex")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing sync key")?;
+    let account_id: AccountId = value
+        .get("accountId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing account id")?
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    let vault_id: VaultId = value
+        .get("vaultId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing vault id")?
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    let unlock_key = value
+        .get("unlockKey")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing collector unlock key")?;
+    let public_key = vrcx_0_nanashi_website_protocol::seal::SealPublicKey::from_bytes(
+        &vrcx_0_nanashi_website_protocol::b64::decode(unlock_key).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let secret = SyncSecret::parse_own_key(sync_key_hex).map_err(|e| e.to_string())?;
+    let keys = VaultKeys::derive(&secret, vault_id);
+    let payload = serde_json::json!({
+        "version": 1,
+        "vaultPk": vrcx_0_nanashi_website_protocol::b64::encode(keys.public().vault_pk.as_bytes()),
+        "vrchatUserId": value.get("vrchatUserId").and_then(serde_json::Value::as_str).ok_or("missing VRChat user id")?,
+        "cookies": {
+            "auth": value.get("authCookie").and_then(serde_json::Value::as_str).ok_or("missing auth cookie")?,
+            "twoFactorAuth": value.get("twoFactorCookie").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()),
+        },
+        "expiresAt": value.get("expiresAt").and_then(serde_json::Value::as_i64).ok_or("missing expiry")?,
+        "intervalSeconds": value.get("intervalSeconds").and_then(serde_json::Value::as_u64).ok_or("missing interval")?,
+    });
+    let plaintext = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+    let mut aad = account_id.as_str().as_bytes().to_vec();
+    aad.extend_from_slice(vault_id.as_bytes());
+    let sealed = vrcx_0_nanashi_website_protocol::seal::seal(
+        &public_key,
+        b"remotesync/v1/unlock",
+        &aad,
+        &plaintext,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "sealed": vrcx_0_nanashi_website_protocol::b64::encode(&sealed) }))
 }
 
 #[derive(Deserialize)]

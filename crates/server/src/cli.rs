@@ -836,9 +836,6 @@ fn users(state: &Shared, command: UsersCommand, now: i64) -> CliResult {
                     state.allow_sync(id, ACTOR).map_err(api_error)?;
                     registry = state.registry();
                 } else {
-                    if account.is_owner() {
-                        return Err("RemoteSync cannot be forbidden for an owner".into());
-                    }
                     if !args.yes {
                         return Err(format!(
                             "this purges all synced data of {} permanently; repeat with --yes",
@@ -869,11 +866,6 @@ fn users(state: &Shared, command: UsersCommand, now: i64) -> CliResult {
                 registry.set_max_vaults(id, v).map_err(|e| e.to_string())?;
             }
             drop(registry);
-            if account.is_owner() && (args.quota.is_some() || args.max_vaults.is_some()) {
-                eprintln!(
-                    "note: owners have no limits; the stored values apply only if the role is revoked"
-                );
-            }
             print_account(&find(state, id.as_str())?);
         }
         UsersCommand::Suspend { account } => {

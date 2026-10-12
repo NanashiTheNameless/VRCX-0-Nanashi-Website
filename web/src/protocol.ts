@@ -27,7 +27,7 @@ function getWorker() {
   return worker
 }
 
-function callWorker(type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention', payload?: unknown): Promise<any> {
+function callWorker(type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock', payload?: unknown): Promise<any> {
   const id = nextId++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
@@ -50,6 +50,7 @@ export type ManifestInfo = { subject: { vrchatUserId: string; displayName: strin
 type ManifestInput = { vaultId: string; manifestSeq: number; manifest: string }
 export const manifestInfo = (input: ManifestInput): Promise<ManifestInfo> => callWorker('manifestInfo', input)
 export const manifestRetention = (input: ManifestInput & { maxAgeDays: number | null; keepBelowLimitMarginPct: number | null }): Promise<{ manifest: string; manifestSeq: number }> => callWorker('manifestRetention', input)
+export const collectorSealUnlock = (input: { accountId: string; vaultId: string; unlockKey: string; vrchatUserId: string; authCookie: string; twoFactorCookie: string; expiresAt: number; intervalSeconds: number }): Promise<{ sealed: string }> => callWorker('collectorSealUnlock', input)
 
 export function stopProtocolWorker() {
   worker?.terminate()
