@@ -1057,7 +1057,11 @@ async fn run_child_inner(
             result = child.wait() => {
                 return Err(child_exit_error(result));
             }
-            result = read_frame(&mut rows_stream), if batch.pending.is_none() => {
+            // A full buffer stops reading instead of dropping: unread rows
+            // stay in the child's database until the next upload succeeds.
+            result = read_frame(&mut rows_stream), if batch.pending.is_none()
+                && batch.rows.len() < MAX_BUFFERED_ROWS
+                && buffered_bytes < MAX_BUFFERED_BYTES => {
                 let frame = match result {
                     Ok(Some(frame)) => frame,
                     Ok(None) => return Err(child_exit_error(child.wait().await)),
@@ -1071,13 +1075,8 @@ async fn run_child_inner(
                 if row.row_id <= batch.last_seen_row_id { return Err("child row ids must increase".into()); }
                 batch.last_seen_row_id = row.row_id;
                 let row_bytes = frame.len();
-                if batch.rows.len() >= MAX_BUFFERED_ROWS || buffered_bytes.saturating_add(row_bytes) > MAX_BUFFERED_BYTES {
-                    batch.dropped_rows = batch.dropped_rows.saturating_add(1);
-                    status.lock().unwrap_or_else(|p| p.into_inner()).last_error = Some("collector buffer reached its 32 MiB limit; waiting for API recovery".into());
-                } else {
-                    buffered_bytes = buffered_bytes.saturating_add(row_bytes);
-                    batch.rows.push(row);
-                }
+                buffered_bytes = buffered_bytes.saturating_add(row_bytes);
+                batch.rows.push(row);
             }
             _ = flush_tick.tick() => {
                 if let Err(error) = flush_rows(&flush_context, &mut batch, &mut control_stream, status).await {
