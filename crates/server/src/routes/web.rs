@@ -1558,9 +1558,7 @@ pub(crate) fn second_factor(
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
     let ok = match method {
-        ReauthMethod::Email => {
-            check_email_code(state, account, email_purpose, &normalized_code)?
-        }
+        ReauthMethod::Email => check_email_code(state, account, email_purpose, &normalized_code)?,
         other => check_second_factor(state, account, other, &normalized_code, now_ms())?,
     };
     if ok && method == ReauthMethod::Recovery {
