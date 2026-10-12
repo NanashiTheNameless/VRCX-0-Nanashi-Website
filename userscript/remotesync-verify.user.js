@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         VRCX-0-Nanashi website check
 // @namespace    https://github.com/NanashiTheNameless/VRCX-0-Nanashi-Website
-// @version      1.0.2
+// @version      1.0.3
+// @updateURL    https://raw.githubusercontent.com/NanashiTheNameless/VRCX-0-Nanashi-Website/main/userscript/remotesync-verify.user.js
+// @downloadURL  https://raw.githubusercontent.com/NanashiTheNameless/VRCX-0-Nanashi-Website/main/userscript/remotesync-verify.user.js
 // @description  Checks in your own browser that the RemoteSync website runs the official unmodified code and whether it is the official instance. Shows the result at the top of the page. It never blocks the page. Install it from the source repository, not from the website it checks.
 // @match        https://vrcx.namelessnanashi.dev/*
 // @run-at       document-start
@@ -30,7 +32,8 @@
   }
 
   async function load(path, cache) {
-    const requestPath = path === 'index.html' ? '/' : path
+    const normalizedPath = path.replace(/^\/+/, '')
+    const requestPath = normalizedPath === 'index.html' ? '/' : `/${normalizedPath}`
     const response = await fetch(new URL(requestPath, location.origin), {
       cache,
       credentials: 'omit',

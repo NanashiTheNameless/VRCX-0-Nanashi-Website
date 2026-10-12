@@ -154,6 +154,7 @@ struct Supervisor {
     max_sessions: usize,
     unlock_guard: tokio::sync::Mutex<()>,
     sessions: Mutex<HashMap<String, RunningSession>>,
+    finished: Mutex<HashMap<String, SessionStatus>>,
 }
 
 struct FlushBatch {
@@ -835,7 +836,7 @@ async fn publish_live(
 
 async fn run_child(mut session: ChildSession, mut stop: oneshot::Receiver<()>) {
     let result = run_child_inner(&mut session, &mut stop).await;
-    if let Err(error) = result {
+    let failed_status = if let Err(error) = result {
         let mut state = session.status.lock().unwrap_or_else(|p| p.into_inner());
         state.state = if error == codes::COLLECTOR_UNAVAILABLE {
             session.supervisor.available.store(false, Ordering::Relaxed);
@@ -846,7 +847,10 @@ async fn run_child(mut session: ChildSession, mut stop: oneshot::Receiver<()>) {
             "needs_unlock".into()
         };
         state.last_error = Some(error.chars().take(240).collect());
-    }
+        Some(state.clone())
+    } else {
+        None
+    };
     let _ = uds_call(
         &session.supervisor.config,
         Method::DELETE,
@@ -857,6 +861,20 @@ async fn run_child(mut session: ChildSession, mut stop: oneshot::Receiver<()>) {
     .await;
     let _ = std::fs::remove_dir_all(&session.data_dir);
     let session_key = key(&session.account, &session.vault.to_string());
+    if let Some(status) = failed_status {
+        let mut finished = session
+            .supervisor
+            .finished
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        finished.insert(session_key.clone(), status);
+        while finished.len() > 256 {
+            let Some(oldest_key) = finished.keys().next().cloned() else {
+                break;
+            };
+            finished.remove(&oldest_key);
+        }
+    }
     let mut sessions = session
         .supervisor
         .sessions
@@ -1023,6 +1041,7 @@ async fn status(
     AxumPath((account, vault)): AxumPath<(String, String)>,
 ) -> axum::Json<SessionStatus> {
     let sessions = state.sessions.lock().unwrap_or_else(|p| p.into_inner());
+    let session_key = key(&account, &vault);
     let status = sessions
         .get(&key(&account, &vault))
         .map(|session| {
@@ -1031,6 +1050,14 @@ async fn status(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
+        })
+        .or_else(|| {
+            state
+                .finished
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&session_key)
+                .cloned()
         })
         .unwrap_or_else(|| {
             let available = state.available.load(Ordering::Relaxed);
@@ -1200,6 +1227,11 @@ async fn unlock(
                 data_dir,
             },
         );
+    state
+        .finished
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&key(&account, &vault.to_string()));
     let _ = ready.send(());
     (StatusCode::ACCEPTED, "").into_response()
 }
@@ -1246,6 +1278,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         max_sessions: config.max_sessions.clamp(1, 256),
         unlock_guard: tokio::sync::Mutex::new(()),
         sessions: Mutex::new(HashMap::new()),
+        finished: Mutex::new(HashMap::new()),
     });
     let update_state = state.clone();
     tokio::spawn(async move {
