@@ -10,6 +10,9 @@ x-hardening: &hardening
 services:
   api:
     <<: *hardening
+    depends_on:
+      blobstore:
+        condition: service_started
     image: ghcr.io/nanashithenameless/vrcx-0-nanashi-website-api:latest
     user: "10001:65532"
     group_add: ["10003", "10005", "10007", "${REMOTESYNC_SECRETS_GID:-1000}"]

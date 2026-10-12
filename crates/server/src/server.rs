@@ -28,7 +28,8 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 
 pub fn spawn_maintenance(state: Shared) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        let interval = Duration::from_secs(60);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
         let mut minutes = 0_u64;
         loop {
             tick.tick().await;
