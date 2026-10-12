@@ -9,7 +9,8 @@ use crate::keys::{self, VaultKeys};
 use crate::{Error, Result};
 
 pub const DOMAIN: &[u8] = b"remotesync/v1/manifest";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
+const PREVIOUS_VERSION: u8 = 1;
 pub const CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +126,7 @@ impl Manifest {
 
     pub fn next(&self) -> Self {
         let mut next = self.clone();
+        next.v = VERSION;
         next.manifest_seq += 1;
         next
     }
@@ -174,6 +176,9 @@ fn binding(vault_id: &VaultId, manifest_seq: u64) -> Vec<u8> {
 }
 
 pub fn seal_manifest(manifest: &Manifest, keys: &VaultKeys) -> Result<Vec<u8>> {
+    if manifest.v != VERSION {
+        return Err(Error::Invalid("manifest version"));
+    }
     if manifest.vault_id != keys.vault_id() {
         return Err(Error::Mismatch("vault keys"));
     }
@@ -212,7 +217,7 @@ pub fn open_manifest(
     )?;
     let (header, _) = unverified.verify(&keys.public().manifest_pk)?;
     let manifest: Manifest = framing::from_cbor(&header, "manifest")?;
-    if manifest.v != VERSION {
+    if manifest.v != VERSION && manifest.v != PREVIOUS_VERSION {
         return Err(Error::Invalid("manifest version"));
     }
     if manifest.vault_id != vault_id || manifest.manifest_seq != server_seq {
