@@ -202,6 +202,15 @@ fn admin_target(actor: &WebAuth, target: &AccountRow) -> ApiResult<()> {
     Ok(())
 }
 
+fn admin_target_settings(actor: &WebAuth, target: &AccountRow) -> ApiResult<()> {
+    if actor.account.account_id == target.account_id
+        && target.role == crate::db::registry::Role::Admin
+    {
+        return Ok(());
+    }
+    admin_target(actor, target)
+}
+
 fn admin_account_json(account: AccountRow) -> serde_json::Value {
     serde_json::json!({
         "accountId": account.account_id, "email": account.email,
@@ -416,7 +425,7 @@ async fn admin_sync(
                 .registry()
                 .account(&id)?
                 .ok_or_else(|| ApiErr::not_found("account_not_found", "Account not found."))?;
-            admin_target(&auth, &target)?;
+            admin_target_settings(&auth, &target)?;
             if !body.allowed {
                 if body.confirm_email.as_deref() != Some(target.email.as_str()) {
                     return Err(ApiErr::bad_request("Type the account email to confirm."));
@@ -607,7 +616,7 @@ async fn admin_limits(
                 .registry()
                 .account(&parsed)?
                 .ok_or_else(|| ApiErr::not_found("account_not_found", "Account not found."))?;
-            admin_target(&auth, &target)?;
+            admin_target_settings(&auth, &target)?;
             let registry = state.registry();
             if let Some(quota) = quota {
                 registry.set_quota(&parsed, quota)?;
@@ -649,7 +658,7 @@ async fn admin_collector(
                 .registry()
                 .account(&parsed)?
                 .ok_or_else(|| ApiErr::not_found("account_not_found", "Account not found."))?;
-            admin_target(&auth, &target)?;
+            admin_target_settings(&auth, &target)?;
             state
                 .registry()
                 .set_collector_allowed(&parsed, body.allowed)?;
