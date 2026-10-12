@@ -1553,9 +1553,15 @@ pub(crate) fn second_factor(
     code: &str,
     email_purpose: &str,
 ) -> ApiResult<bool> {
+    let normalized_code = code
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
     let ok = match method {
-        ReauthMethod::Email => check_email_code(state, account, email_purpose, code)?,
-        other => check_second_factor(state, account, other, code, now_ms())?,
+        ReauthMethod::Email => {
+            check_email_code(state, account, email_purpose, &normalized_code)?
+        }
+        other => check_second_factor(state, account, other, &normalized_code, now_ms())?,
     };
     if ok && method == ReauthMethod::Recovery {
         let left = state.registry().recovery_codes_left(&account.account_id)?;
