@@ -22,7 +22,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p vrcx-0-nanashi-website-collector
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/remotesync-collector /usr/local/bin/remotesync-collector
 COPY --from=artifact-check --chmod=0555 /tmp/vrcx-0-nanashi-headless /usr/local/bin/vrcx-0-nanashi-headless
 COPY --from=artifact-check /tmp/collector-runtime.json /usr/local/share/remotesync/collector-runtime.json
