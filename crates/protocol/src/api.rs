@@ -100,6 +100,8 @@ pub struct Capabilities {
     pub limits: Limits,
     #[serde(default)]
     pub policy_url: Option<String>,
+    #[serde(default)]
+    pub chunk_replace: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +267,16 @@ pub struct ChunkList {
 #[serde(rename_all = "camelCase")]
 pub struct CompactRequest {
     pub replaces_up_to_seq: u64,
+    pub chunk_ids: Vec<ChunkId>,
+}
+
+pub const MAX_REPLACED_CHUNKS: usize = 10_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceChunksRequest {
+    pub remove_seqs: Vec<u64>,
+    #[serde(default)]
     pub chunk_ids: Vec<ChunkId>,
 }
 

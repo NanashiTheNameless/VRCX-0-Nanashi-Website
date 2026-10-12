@@ -953,6 +953,50 @@ async fn objects_follow_chunks_through_compaction_and_vault_deletion() {
 }
 
 #[tokio::test]
+async fn replacing_chunks_drops_their_objects_and_is_announced() {
+    let h = Harness::new(None);
+    let account = h.account(None);
+    let token = h.token(&account, ALL);
+    let vault_id = make_vault(&h, &token).await;
+    for fill in 1..=3 {
+        upload(&h, &token, &vault_id, fill).await;
+    }
+    let (replacement, _) = upload(&h, &token, &vault_id, 9).await;
+    let capabilities = h.get("/v1/capabilities", None).await;
+    assert_eq!(capabilities.json()["chunkReplace"], true);
+
+    let reply = h
+        .post_json(
+            &format!("/v1/vaults/{vault_id}/chunks:replace"),
+            Some(&token),
+            json!({"removeSeqs": [], "chunkIds": [replacement]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let reply = h
+        .post_json(
+            &format!("/v1/vaults/{vault_id}/chunks:replace"),
+            Some(&token),
+            json!({"removeSeqs": [2], "chunkIds": [replacement]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    h.state.process_deletions().await.unwrap();
+    assert_eq!(h.state.objects.memory_keys().len(), 3);
+    let batch = h
+        .get(
+            &format!("/v1/vaults/{vault_id}/chunks:batch?after=0"),
+            Some(&token),
+        )
+        .await;
+    let frames = api::batch::decode(&batch.body).unwrap();
+    assert_eq!(
+        frames.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        [1, 3, 4]
+    );
+}
+
+#[tokio::test]
 async fn retried_upload_does_not_store_a_second_object() {
     let h = Harness::new(None);
     let account = h.account(None);

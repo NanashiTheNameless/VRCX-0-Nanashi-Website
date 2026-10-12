@@ -10,8 +10,8 @@ use vrcx_0_nanashi_website_protocol::api::{
     self, AccountInfo, Capabilities, ChunkList, ChunkListItem, ChunkStored, ClientInfo,
     ClientIpEntry, ClientLocation, CollectorCapabilities, CompactRequest, CreateVaultRequest,
     DeviceAuthorizeRequest, DeviceAuthorizeResponse, DeviceTokenRequest, DeviceTokenResponse,
-    Limits, ReauthMethod, ReauthRequest, Scope, TransferCreateRequest, TransferCreated,
-    TransferKey, VaultInfo, codes, headers,
+    Limits, ReauthMethod, ReauthRequest, ReplaceChunksRequest, Scope, TransferCreateRequest,
+    TransferCreated, TransferKey, VaultInfo, codes, headers,
 };
 use vrcx_0_nanashi_website_protocol::b64;
 use vrcx_0_nanashi_website_protocol::ids::{AccountId, ChunkId, VaultId};
@@ -75,6 +75,7 @@ pub fn shared_routes() -> Router<Shared> {
         .route("/vaults/{vault_id}/chunks:batch", get(batch_chunks))
         .route("/vaults/{vault_id}/chunks/{seq}", get(get_chunk))
         .route("/vaults/{vault_id}/compact", post(compact))
+        .route("/vaults/{vault_id}/chunks:replace", post(replace_chunks))
         .route("/vaults/{vault_id}/live", get(get_live))
         .route("/vaults/{vault_id}/collector", get(collector_status))
         .route(
@@ -153,6 +154,7 @@ async fn capabilities(
             max_request_bytes: api::MAX_REQUEST_BYTES as u64,
         },
         policy_url: state.config.policy_url.clone(),
+        chunk_replace: true,
     }))
 }
 
@@ -1050,6 +1052,36 @@ async fn compact(
             let (mut store, keys) = state.open_store_with_keys(&auth.account)?;
             let removed =
                 store.compact(&vault_id, request.replaces_up_to_seq, &request.chunk_ids)?;
+            state.refresh_usage(&auth.account.account_id, &store)?;
+            state.enqueue_object_deletions(&keys, &removed)?;
+            Ok(())
+        })
+        .await?;
+    state.kick_deletions();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn replace_chunks(
+    State(state): State<Shared>,
+    auth: ApiAuth,
+    Path(vault_id): Path<String>,
+    Json(request): Json<ReplaceChunksRequest>,
+) -> ApiResult<StatusCode> {
+    auth.require_sync(Scope::Sync)?;
+    let vault_id = parse_vault(&vault_id)?;
+    if request.remove_seqs.is_empty()
+        || request.remove_seqs.len() > api::MAX_REPLACED_CHUNKS
+        || request.chunk_ids.len() > api::MAX_REPLACED_CHUNKS
+    {
+        return Err(ApiErr::bad_request(
+            "removeSeqs must list 1 to 10000 chunks and chunkIds at most 10000.",
+        ));
+    }
+    state
+        .run(move |state| {
+            let (mut store, keys) = state.open_store_with_keys(&auth.account)?;
+            let removed =
+                store.replace_chunks(&vault_id, &request.remove_seqs, &request.chunk_ids)?;
             state.refresh_usage(&auth.account.account_id, &store)?;
             state.enqueue_object_deletions(&keys, &removed)?;
             Ok(())

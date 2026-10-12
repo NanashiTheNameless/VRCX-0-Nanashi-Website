@@ -751,6 +751,51 @@ impl AccountStore {
         self.reclaim();
         Ok(removed)
     }
+
+    pub fn replace_chunks(
+        &mut self,
+        vault_id: &VaultId,
+        remove_seqs: &[u64],
+        replacements: &[ChunkId],
+    ) -> StoreResult<Vec<ObjectId>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::require_vault(&tx, vault_id)?;
+        for chunk_id in replacements {
+            let seq: Option<i64> = tx
+                .query_row(
+                    "SELECT seq FROM chunks WHERE vault_id = ?1 AND chunk_id = ?2",
+                    params![vault_key(vault_id), chunk_id.as_bytes().as_slice()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match seq {
+                Some(seq) if !remove_seqs.contains(&(seq as u64)) => {}
+                Some(_) => {
+                    return Err(StoreError::Invalid(
+                        "replacement chunk is listed for removal",
+                    ));
+                }
+                None => return Err(StoreError::ChunkNotFound),
+            }
+        }
+        let mut removed = Vec::new();
+        for seq in remove_seqs {
+            removed.extend(Self::object_ids_where(
+                &tx,
+                "SELECT object_id FROM chunks WHERE vault_id = ?1 AND seq = ?2",
+                params![vault_key(vault_id), *seq as i64],
+            )?);
+            tx.execute(
+                "DELETE FROM chunks WHERE vault_id = ?1 AND seq = ?2",
+                params![vault_key(vault_id), *seq as i64],
+            )?;
+        }
+        tx.commit()?;
+        self.reclaim();
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
@@ -962,6 +1007,59 @@ mod tests {
                 .unwrap()
                 .0,
             4
+        );
+    }
+
+    #[test]
+    fn replacing_chunks_removes_only_the_listed_ones_and_keeps_sequence_numbers() {
+        let (_dir, _, mut store) = store();
+        let vault = vault(&mut store);
+        let first = ChunkId::random().unwrap();
+        put(&mut store, &vault, &first, 1, 4, OPEN).unwrap();
+        put(&mut store, &vault, &ChunkId::random().unwrap(), 2, 4, OPEN).unwrap();
+        put(&mut store, &vault, &ChunkId::random().unwrap(), 3, 4, OPEN).unwrap();
+        let replacement = ChunkId::random().unwrap();
+        put(&mut store, &vault, &replacement, 4, 2, OPEN).unwrap();
+        let second_object = store.chunk_page(&vault, 1, 1, u64::MAX).unwrap().chunks[0].object_id;
+
+        assert!(matches!(
+            store.replace_chunks(&vault, &[2], &[ChunkId::random().unwrap()]),
+            Err(StoreError::ChunkNotFound)
+        ));
+        assert!(store.replace_chunks(&vault, &[1, 2], &[first]).is_err());
+        assert_eq!(
+            store
+                .chunk_page(&vault, 0, 10, u64::MAX)
+                .unwrap()
+                .chunks
+                .len(),
+            4
+        );
+
+        assert_eq!(
+            store.replace_chunks(&vault, &[2], &[replacement]).unwrap(),
+            vec![second_object]
+        );
+        let page = store.chunk_page(&vault, 0, 10, u64::MAX).unwrap();
+        assert_eq!(
+            page.chunks
+                .iter()
+                .map(|chunk| chunk.seq)
+                .collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
+        assert!(
+            store
+                .replace_chunks(&vault, &[2], &[replacement])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.replace_chunks(&vault, &[4], &[]).unwrap().len(), 1);
+        assert_eq!(
+            put(&mut store, &vault, &ChunkId::random().unwrap(), 5, 1, OPEN)
+                .unwrap()
+                .0,
+            5
         );
     }
 
