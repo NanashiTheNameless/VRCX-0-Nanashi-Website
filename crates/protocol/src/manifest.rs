@@ -103,6 +103,9 @@ pub struct Manifest {
     pub subject: Option<ManifestSubject>,
     #[serde(default)]
     pub retention: RetentionSettings,
+    /// Device that is allowed to compact the merged vault history.
+    #[serde(default)]
+    pub dedupe_device_key_id: Option<String>,
     pub signers: Vec<SignerEntry>,
 }
 
@@ -115,6 +118,7 @@ impl Manifest {
             compacted_through_seq: 0,
             subject,
             retention: RetentionSettings::default(),
+            dedupe_device_key_id: None,
             signers: Vec::new(),
         }
     }
@@ -134,7 +138,18 @@ impl Manifest {
     pub fn remove_signer(&mut self, key_id: &str) -> bool {
         let before = self.signers.len();
         self.signers.retain(|existing| existing.key_id != key_id);
+        if self.dedupe_device_key_id.as_deref() == Some(key_id) {
+            self.dedupe_device_key_id = None;
+        }
         before != self.signers.len()
+    }
+
+    pub fn dedupe_device_is_valid(&self) -> bool {
+        self.dedupe_device_key_id.as_ref().is_none_or(|key_id| {
+            self.signers
+                .iter()
+                .any(|signer| signer.key_id == *key_id && signer.kind == SignerKind::Device)
+        })
     }
 }
 
@@ -164,6 +179,9 @@ pub fn seal_manifest(manifest: &Manifest, keys: &VaultKeys) -> Result<Vec<u8>> {
     }
     if !manifest.retention.is_valid() {
         return Err(Error::Invalid("retention settings"));
+    }
+    if !manifest.dedupe_device_is_valid() {
+        return Err(Error::Invalid("dedupe device"));
     }
     for entry in &manifest.signers {
         entry.verifying_key()?;
@@ -199,6 +217,9 @@ pub fn open_manifest(
     }
     if manifest.vault_id != vault_id || manifest.manifest_seq != server_seq {
         return Err(Error::Mismatch("manifest"));
+    }
+    if !manifest.dedupe_device_is_valid() {
+        return Err(Error::Invalid("dedupe device"));
     }
     if highest_seen.is_some_and(|seen| manifest.manifest_seq < seen) {
         return Err(Error::Rollback("manifest"));
