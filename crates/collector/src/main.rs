@@ -60,6 +60,8 @@ const MAX_RUNTIME_METADATA_BYTES: usize = 16 * 1024;
 const VRCX_RELEASE_BASE: &str =
     "https://github.com/NanashiTheNameless/VRCX-0-Nanashi/releases/download";
 const COLLECTOR_UNAVAILABLE_EXIT_CODE: i32 = 78;
+const RUNTIME_PROBE_UID: u32 = CHILD_UID_BASE + CHILD_UID_COUNT;
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Clone)]
 #[command(
@@ -482,6 +484,9 @@ async fn update_headless_runtime(client: &reqwest::Client) -> Result<Option<Stri
     {
         return Err("staged collector runtime failed validation".into());
     }
+    if !runtime_starts(&binary_path, Some(RUNTIME_PROBE_UID)).await {
+        return Err("staged collector runtime does not start on this image".into());
+    }
 
     let current_link = runtime_root.join("current");
     let next_link = runtime_root.join("current.next");
@@ -552,6 +557,45 @@ fn child_fd(stream: &std::os::unix::net::UnixStream) -> std::io::Result<RawFd> {
     fd_high(stream.as_raw_fd())
 }
 
+fn drop_privileges(uid: u32) -> std::io::Result<()> {
+    unsafe {
+        if libc::setgroups(0, std::ptr::null()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setresgid(uid, uid, uid) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setresuid(uid, uid, uid) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+async fn runtime_starts(binary_path: &Path, uid: Option<u32>) -> bool {
+    let mut command = Command::new(binary_path);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(uid) = uid {
+        unsafe {
+            command.as_std_mut().pre_exec(move || drop_privileges(uid));
+        }
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(RUNTIME_PROBE_TIMEOUT, child.wait()).await,
+        Ok(Ok(status)) if status.code() == Some(COLLECTOR_UNAVAILABLE_EXIT_CODE)
+    )
+}
+
 fn launch_child(
     binary_path: &Path,
     data_dir: &Path,
@@ -590,19 +634,7 @@ fn launch_child(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            if libc::setgroups(0, std::ptr::null()) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::setresgid(child_uid, child_uid, child_uid) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::setresuid(child_uid, child_uid, child_uid) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
+            drop_privileges(child_uid)
         });
     }
     command.spawn()
@@ -1318,7 +1350,9 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("{} must be a tmpfs mount", runtime_root.display()).into());
     }
     std::fs::set_permissions(runtime_root, std::fs::Permissions::from_mode(0o755))?;
-    let available = compatible_collector_available();
+    let (active_binary, _) = active_runtime_paths();
+    let available = compatible_collector_available()
+        && runtime_starts(&active_binary, Some(RUNTIME_PROBE_UID)).await;
     if !available {
         tracing::warn!(
             binary = HEADLESS_BINARY,
@@ -1413,4 +1447,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
     run(Config::parse()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn script(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "remotesync-collector-probe-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("runtime");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn only_a_runtime_that_reaches_its_own_argument_check_passes_the_probe() {
+        let starts = script("starts", "exit 78");
+        let loader_failure = script("loader", "exit 1");
+        let clean_exit = script("clean", "exit 0");
+        assert!(runtime_starts(&starts, None).await);
+        assert!(!runtime_starts(&loader_failure, None).await);
+        assert!(!runtime_starts(&clean_exit, None).await);
+        assert!(!runtime_starts(Path::new("/nonexistent/runtime"), None).await);
+        for path in [starts, loader_failure, clean_exit] {
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
 }
