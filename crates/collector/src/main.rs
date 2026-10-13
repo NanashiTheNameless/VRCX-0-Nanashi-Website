@@ -575,8 +575,21 @@ fn drop_privileges(uid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
-async fn runtime_starts(binary_path: &Path, uid: Option<u32>) -> bool {
+/// The runtime is the desktop app's code built as a collector. It contains no
+/// adoption count, and these make sure a server never adds to it even if a
+/// future build did.
+const TELEMETRY_OPT_OUT_ENVS: [&str; 2] = ["VRCX_0_NANASHI_TELEMETRY_OPTOUT", "DO_NOT_TRACK"];
+
+fn runtime_command(binary_path: &Path) -> Command {
     let mut command = Command::new(binary_path);
+    for name in TELEMETRY_OPT_OUT_ENVS {
+        command.env(name, "1");
+    }
+    command
+}
+
+async fn runtime_starts(binary_path: &Path, uid: Option<u32>) -> bool {
+    let mut command = runtime_command(binary_path);
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -610,7 +623,7 @@ fn launch_child(
     let session_fd = session_owned.as_raw_fd();
     let rows_fd = rows_owned.as_raw_fd();
     let control_fd = control_owned.as_raw_fd();
-    let mut command = Command::new(binary_path);
+    let mut command = runtime_command(binary_path);
     command
         .args([
             "--collector-mode",
@@ -1476,5 +1489,16 @@ mod tests {
         for path in [starts, loader_failure, clean_exit] {
             std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn the_runtime_is_started_with_both_telemetry_opt_outs_set() {
+        let opted_out = script(
+            "telemetry-opt-out",
+            r#"[ "$VRCX_0_NANASHI_TELEMETRY_OPTOUT" = 1 ] && [ "$DO_NOT_TRACK" = 1 ] && exit 78
+exit 1"#,
+        );
+        assert!(runtime_starts(&opted_out, None).await);
+        std::fs::remove_dir_all(opted_out.parent().unwrap()).unwrap();
     }
 }
