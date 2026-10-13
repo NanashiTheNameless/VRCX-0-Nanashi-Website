@@ -10,7 +10,7 @@ import './styles/app.css'
 const Dashboard = lazy(() => import('./dashboard'))
 
 const FEATURES = [
-  ['No telemetry', 'No analytics, crash reporting, or usage reporting. The app talks to VRChat, GitHub, and the services you turn on.'],
+  ['No usage telemetry', 'No analytics, crash reporting, or usage reporting. The app sends one anonymous adoption count, which you can turn off.'],
   ['RemoteSync', 'Optional end-to-end encrypted history sync between your PCs. Off by default, and the server cannot read what it stores.'],
   ['Shared collections', 'Publish a list of worlds as a link that anyone can open and import, without a VRChat user id attached.'],
   ['Runs next to VRCX-0', 'Its own data folder, links, and updates. Your VRCX-0 data is copied on first launch and never written to.'],
@@ -22,7 +22,7 @@ function LandingPage() {
       <section className="landing-hero">
         <div className="landing-copy">
           <h1>VRCX-0-Nanashi</h1>
-          <p>A personal fork of VRCX-0, the companion app for VRChat, with its own encrypted history sync and no telemetry.</p>
+          <p>A personal fork of VRCX-0, the companion app for VRChat, with its own encrypted history sync and no usage telemetry.</p>
           <div className="landing-actions">
             <a className="landing-button primary" href={DOWNLOAD} target="_blank" rel="noreferrer">Download <ArrowUpRight size={16} aria-hidden="true" /></a>
             <a className="landing-button secondary" href="/dashboard">Open dashboard</a>
@@ -46,6 +46,7 @@ function PrivacyPage() {
       <ul>
         <li><a href={APP_SOURCE} target="_blank" rel="noreferrer">Desktop app source code</a></li>
         <li><a href={WEBSITE_SOURCE} target="_blank" rel="noreferrer">RemoteSync website and server source code</a></li>
+        <li><a href={`${APP_SOURCE}/blob/master/TELEMETRY.md`} target="_blank" rel="noreferrer">The anonymous adoption count the desktop app sends, and how to turn it off</a></li>
       </ul>
       <p>Source code describes the software. A self-hosted RemoteSync server's operator controls its hosting and configuration.</p>
       <a className="landing-button secondary" href="/">Back to home</a>
