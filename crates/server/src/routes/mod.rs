@@ -87,10 +87,22 @@ fn website_cors(state: &Shared) -> tower_http::cors::CorsLayer {
 
 pub fn api_router(state: Shared) -> Router {
     Router::new()
-        .nest("/v1", v1::router())
-        .nest("/web/v1", web::router().layer(website_cors(&state)))
+        .route("/v1", axum::routing::any(upgrade_required))
+        .route("/v1/{*path}", axum::routing::any(upgrade_required))
+        .route("/web/v1", axum::routing::any(upgrade_required))
+        .route(
+            "/web/v1/{*path}",
+            axum::routing::any(upgrade_required).layer(website_cors(&state)),
+        )
+        .route("/public/v1", axum::routing::any(upgrade_required))
+        .route(
+            "/public/v1/{*path}",
+            axum::routing::any(upgrade_required).layer(website_cors(&state)),
+        )
+        .nest("/v2", v1::router())
+        .nest("/web/v2", web::router().layer(website_cors(&state)))
         .nest(
-            "/public/v1",
+            "/public/v2",
             collections::public_router().layer(website_cors(&state)),
         )
         .fallback(api_not_found)
@@ -109,4 +121,17 @@ pub fn collector_router(state: Shared) -> Router {
             axum::routing::put(v1::collector_store_chunk),
         )
         .with_state(state)
+}
+
+async fn upgrade_required() -> (
+    axum::http::StatusCode,
+    axum::Json<vrcx_0_nanashi_website_protocol::api::ApiError>,
+) {
+    (
+        axum::http::StatusCode::UPGRADE_REQUIRED,
+        axum::Json(vrcx_0_nanashi_website_protocol::api::ApiError::new(
+            "upgrade_required",
+            "This server uses epoch-second protocol v2. Upgrade the client before syncing.",
+        )),
+    )
 }

@@ -27,7 +27,7 @@ use crate::rate;
 use crate::state::AccountKeys;
 use crate::state::{AppState, Shared};
 use crate::totp;
-use crate::util::{DAY_MS, now_ms};
+use crate::util::{DAY_MS, now_epoch};
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 
@@ -145,7 +145,7 @@ async fn capabilities(
         version: env!("CARGO_PKG_VERSION").into(),
         commit: state.config.commit.clone(),
         protocol: vec![api::PROTOCOL_VERSION],
-        web_api: vec![1],
+        web_api: vec![2],
         registration: crate::routes::web::effective_registration(&state),
         website_origins: state.config.web_origins.clone(),
         collector: collector_capabilities(&state).await,
@@ -183,7 +183,7 @@ async fn device_authorize(
                 token::generate_device_code().map_err(|e| ApiErr::internal("rng", e))?;
             let hash = state.keys.hmac(DEVICE_CODE_PURPOSE, device_code.as_bytes());
             let registry = state.registry();
-            registry.prune_expired(now_ms())?;
+            registry.prune_expired(now_epoch())?;
             for _ in 0..8 {
                 let user_code =
                     token::generate_user_code().map_err(|e| ApiErr::internal("rng", e))?;
@@ -195,7 +195,7 @@ async fn device_authorize(
                     &user_code,
                     &label,
                     &request.requested_scopes,
-                    now_ms() + PAIRING_TTL_MS,
+                    now_epoch() + (PAIRING_TTL_MS / 1000),
                 )?;
                 let website = state
                     .config
@@ -244,8 +244,8 @@ pub fn issue_api_token(
         scopes,
         label,
         client_version: None,
-        now_ms: now_ms(),
-        expires_at_ms: None,
+        now: now_epoch(),
+        expires_at: None,
         idle_timeout_ms: None,
     })?;
     Ok(full.to_string())
@@ -265,22 +265,18 @@ async fn device_token(
             let hash = state
                 .keys
                 .hmac(DEVICE_CODE_PURPOSE, request.device_code.as_bytes());
-            let now = now_ms();
+            let now = now_epoch();
             let pairing = {
                 let registry = state.registry();
                 let pairing = registry.pairing_by_device_code(&hash)?;
                 match pairing {
-                    Some(p) if p.expires_at_ms > now => {
-                        if now < p.next_poll_ms {
+                    Some(p) if p.expires_at > now => {
+                        if now < p.next_poll {
                             let interval = p.interval_s + 5;
-                            registry.set_pairing_poll(&hash, now + interval * 1000, interval)?;
+                            registry.set_pairing_poll(&hash, now + interval, interval)?;
                             return Err(ApiErr::pending(codes::SLOW_DOWN, "Polling too fast."));
                         }
-                        registry.set_pairing_poll(
-                            &hash,
-                            now + p.interval_s * 1000,
-                            p.interval_s,
-                        )?;
+                        registry.set_pairing_poll(&hash, now + p.interval_s, p.interval_s)?;
                         p
                     }
                     _ => {
@@ -358,36 +354,37 @@ fn client_infos(
     let registry = state.registry();
     let tokens = registry.tokens_for(&auth.account.account_id)?;
     let ips = registry.client_ips(&auth.account.account_id)?;
-    let cutoff = auth.now_ms - 90 * DAY_MS;
+    let cutoff = auth.now - 90 * (DAY_MS / 1000);
     Ok(tokens
         .into_iter()
         .map(|token: TokenRow| {
             let history: Vec<ClientIpEntry> = ips
                 .iter()
-                .filter(|ip| ip.client_id == token.token_id && ip.last_seen_ms >= cutoff)
+                .filter(|ip| ip.client_id == token.token_id && ip.last_seen >= cutoff)
                 .map(|ip| ClientIpEntry {
                     ip: ip.ip.clone(),
                     location: location(ip.city.clone(), ip.region.clone(), ip.country.clone()),
-                    first_seen_ms: ip.first_seen_ms,
-                    last_seen_ms: ip.last_seen_ms,
+                    first_seen: ip.first_seen,
+                    last_seen: ip.last_seen,
                 })
                 .collect();
-            let first_seen = history.iter().map(|h| h.first_seen_ms).min();
+            let first_seen = history.iter().map(|h| h.first_seen).min();
             ClientInfo {
                 current: token.token_id == auth.token.token_id,
-                active_now: token.revoked_at_ms.is_none()
-                    && token.last_used_ms.is_some_and(|last| {
-                        auth.now_ms - last
-                            < ACTIVE_WINDOW_MS + crate::state::CLIENT_WRITE_INTERVAL_MS
+                active_now: token.revoked_at.is_none()
+                    && token.last_used.is_some_and(|last| {
+                        auth.now - last
+                            < (ACTIVE_WINDOW_MS / 1000)
+                                + (crate::state::CLIENT_WRITE_INTERVAL_MS / 1000)
                     }),
                 client_id: token.token_id,
                 kind: token.client_kind,
                 label: token.label,
                 client_version: token.client_version,
                 scopes: token.scopes,
-                revoked_at_ms: token.revoked_at_ms,
-                first_seen_ms: first_seen,
-                last_seen_ms: token.last_used_ms,
+                revoked_at: token.revoked_at,
+                first_seen,
+                last_seen: token.last_used,
                 current_ip: history.first().cloned(),
                 history: if with_history { history } else { Vec::new() },
             }
@@ -429,13 +426,13 @@ async fn revoke_current(State(state): State<Shared>, auth: ApiAuth) -> ApiResult
                 &auth.account.account_id,
                 &auth.token.token_id,
                 &auth.token.token_id,
-                auth.now_ms,
+                auth.now,
             )?;
             registry.audit(
                 &auth.token.token_id,
                 "revoke-self",
                 Some(&auth.account.account_id),
-                auth.now_ms,
+                auth.now,
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -509,7 +506,7 @@ async fn reauth(
                 }
                 state
                     .registry()
-                    .set_recent_auth(&auth.token.token_id, auth.now_ms + RECENT_AUTH_MS)?;
+                    .set_recent_auth(&auth.token.token_id, auth.now + (RECENT_AUTH_MS / 1000))?;
                 Ok(StatusCode::NO_CONTENT)
             })
             .await;
@@ -519,7 +516,7 @@ async fn reauth(
         .ok_or_else(|| ApiErr::bad_request("code is required."))?;
     state
         .run(move |state| {
-            if !check_second_factor(state, &auth.account, request.method, &code, auth.now_ms)? {
+            if !check_second_factor(state, &auth.account, request.method, &code, auth.now)? {
                 return Err(ApiErr::new(
                     StatusCode::UNAUTHORIZED,
                     codes::UNAUTHORIZED,
@@ -528,7 +525,7 @@ async fn reauth(
             }
             state
                 .registry()
-                .set_recent_auth(&auth.token.token_id, auth.now_ms + RECENT_AUTH_MS)?;
+                .set_recent_auth(&auth.token.token_id, auth.now + (RECENT_AUTH_MS / 1000))?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
@@ -548,7 +545,7 @@ async fn revoke_client(
                 &auth.account.account_id,
                 &client_id,
                 &auth.token.token_id,
-                auth.now_ms,
+                auth.now,
             )? {
                 return Err(ApiErr::not_found(
                     codes::CLIENT_NOT_FOUND,
@@ -559,7 +556,7 @@ async fn revoke_client(
                 &auth.token.token_id,
                 "revoke-client",
                 Some(&auth.account.account_id),
-                auth.now_ms,
+                auth.now,
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -576,13 +573,13 @@ async fn revoke_others(State(state): State<Shared>, auth: ApiAuth) -> ApiResult<
                 &auth.account.account_id,
                 &auth.token.token_id,
                 &auth.token.token_id,
-                auth.now_ms,
+                auth.now,
             )?;
             registry.audit(
                 &auth.token.token_id,
                 "revoke-others",
                 Some(&auth.account.account_id),
-                auth.now_ms,
+                auth.now,
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -624,7 +621,7 @@ async fn delete_data(State(state): State<Shared>, auth: ApiAuth) -> ApiResult<St
                 &auth.token.token_id,
                 "delete-data",
                 Some(&auth.account.account_id),
-                auth.now_ms,
+                auth.now,
             )?;
             Ok(())
         })
@@ -651,7 +648,7 @@ async fn list_vaults(
                         vault_id: vault.vault_id,
                         vault_pk: b64::encode(&vault.vault_pk),
                         manifest_pk: b64::encode(&vault.manifest_pk),
-                        created_at_ms: vault.created_at_ms,
+                        created_at: vault.created_at,
                         max_seq: vault.max_seq,
                         manifest_seq: vault.manifest_seq,
                         usage_bytes: vault.usage_bytes,
@@ -683,7 +680,7 @@ async fn create_vault(
                 &request.vault_id,
                 &vault_pk,
                 &manifest_pk,
-                auth.now_ms,
+                auth.now,
                 AppState::limits(&auth.account),
             )?;
             Ok(StatusCode::CREATED)
@@ -1106,7 +1103,7 @@ async fn get_live(
             "No live snapshot is available for this vault.",
         ));
     };
-    let age = now_ms().saturating_sub(snapshot.published_at_ms).max(0) / 1000;
+    let age = now_epoch().saturating_sub(snapshot.published_at).max(0);
     Ok(binary(
         snapshot.blob,
         &[
@@ -1431,14 +1428,14 @@ async fn transfer_create(
     state
         .run(move |state| {
             let registry = state.registry();
-            registry.prune_expired(auth.now_ms)?;
+            registry.prune_expired(auth.now)?;
             let transfer_id =
                 transfer::new_transfer_id().map_err(|e| ApiErr::internal("rng", e))?;
             registry.insert_transfer(
                 &transfer_id,
                 &auth.account.account_id,
                 &epk,
-                auth.now_ms + TRANSFER_TTL_MS,
+                auth.now + (TRANSFER_TTL_MS / 1000),
             )?;
             Ok((
                 StatusCode::CREATED,
@@ -1466,7 +1463,7 @@ async fn transfer_key(
         .run(move |state| {
             let (epk, _) = state
                 .registry()
-                .transfer(&transfer_id, &auth.account.account_id, auth.now_ms)?
+                .transfer(&transfer_id, &auth.account.account_id, auth.now)?
                 .ok_or_else(transfer_not_found)?;
             Ok(Json(TransferKey {
                 epk: b64::encode(&epk),
@@ -1496,7 +1493,7 @@ async fn transfer_complete(
                 &transfer_id,
                 &auth.account.account_id,
                 &body,
-                auth.now_ms,
+                auth.now,
             )? {
                 return Err(transfer_not_found());
             }
@@ -1504,7 +1501,7 @@ async fn transfer_complete(
                 &auth.token.token_id,
                 "key-transfer",
                 Some(&auth.account.account_id),
-                auth.now_ms,
+                auth.now,
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -1522,7 +1519,7 @@ async fn transfer_result(
         .run(move |state| {
             let registry = state.registry();
             let (_, sealed) = registry
-                .transfer(&transfer_id, &auth.account.account_id, auth.now_ms)?
+                .transfer(&transfer_id, &auth.account.account_id, auth.now)?
                 .ok_or_else(transfer_not_found)?;
             match sealed {
                 Some(sealed) => {

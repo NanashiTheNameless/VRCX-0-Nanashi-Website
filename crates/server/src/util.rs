@@ -1,10 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+pub fn now_epoch() -> i64 {
+    vrcx_0_nanashi_website_protocol::time::system_time_seconds(SystemTime::now())
 }
 
 pub fn random_bytes<const N: usize>() -> [u8; N] {

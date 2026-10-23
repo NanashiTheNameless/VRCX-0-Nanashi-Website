@@ -97,7 +97,7 @@ struct Capabilities {
     available: bool,
     unlock_key: String,
     signing_key: String,
-    keys_valid_since_ms: i64,
+    keys_valid_since: i64,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
@@ -125,6 +125,10 @@ struct UnlockPayload {
     vault_pk: String,
     vrchat_user_id: String,
     cookies: Cookies,
+    #[serde(
+        default,
+        deserialize_with = "vrcx_0_nanashi_website_protocol::time::deserialize_optional_epoch"
+    )]
     expires_at: Option<i64>,
     interval_seconds: u64,
 }
@@ -141,8 +145,8 @@ struct Cookies {
 #[serde(rename_all = "camelCase")]
 struct SessionStatus {
     state: String,
-    since_ms: Option<i64>,
-    last_chunk_at_ms: Option<i64>,
+    since: Option<i64>,
+    last_chunk_at: Option<i64>,
     last_error: Option<String>,
 }
 
@@ -159,7 +163,7 @@ struct Supervisor {
     unlock: SealPrivateKey,
     signer: SignerKey,
     available: AtomicBool,
-    keys_valid_since_ms: i64,
+    keys_valid_since: i64,
     max_sessions: usize,
     unlock_guard: tokio::sync::Mutex<()>,
     sessions: Mutex<HashMap<String, RunningSession>>,
@@ -199,12 +203,8 @@ type Shared = Arc<Supervisor>;
 fn key(account: &str, vault: &str) -> String {
     format!("{account}/{vault}")
 }
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
+fn now_epoch() -> i64 {
+    vrcx_0_nanashi_website_protocol::time::system_time_seconds(std::time::SystemTime::now())
 }
 
 fn cbor<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
@@ -819,24 +819,23 @@ async fn flush_rows(
             if row.v != 1 {
                 return Err("unsupported child row version".into());
             }
-            streams
-                .entry(row.stream.clone())
-                .or_default()
-                .push(row.row.clone());
+            streams.entry(row.stream.clone()).or_default().push(
+                vrcx_0_nanashi_website_protocol::history::normalize_row(&row.stream, &row.row),
+            );
         }
         let body = ChunkBody { streams };
-        let now = now_ms();
-        let oldest = rows.first().map_or(now, |_| now.saturating_sub(30_000));
+        let now = now_epoch();
+        let oldest = rows.first().map_or(now, |_| now.saturating_sub(30));
         let draft = ChunkDraft {
             vault_id: vault,
             source_id: source,
             source_seq: *source_seq,
             kind: ChunkKind::Rows,
-            created_at_ms: now,
+            created_at: now,
             app_version: "collector-headless".into(),
             coverage: vec![CoveragePeriod {
-                start_ms: oldest,
-                end_ms: now,
+                start: oldest,
+                end: now,
             }],
             dropped_rows: *dropped_rows,
             body,
@@ -872,7 +871,7 @@ async fn flush_rows(
     *dropped_rows = 0;
     *pending = None;
     let mut status = status.lock().unwrap_or_else(|p| p.into_inner());
-    status.last_chunk_at_ms = Some(now_ms());
+    status.last_chunk_at = Some(now_epoch());
     status.last_error = None;
     Ok(())
 }
@@ -889,12 +888,16 @@ async fn publish_live(
     let response = control(control_stream, *control_id, "getSnapshot", None).await?;
     let child: ChildSnapshot =
         serde_json::from_value(response["snapshot"].clone()).map_err(|e| e.to_string())?;
-    let live_seq = now_ms().max(0) as u64;
+    let live_seq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64;
     let snapshot = LiveSnapshot {
         v: live::VERSION,
         vault_id: vault,
         live_seq,
-        created_at_ms: now_ms(),
+        created_at: now_epoch(),
         signer_key_id: supervisor.signer.key_id(),
         own: child.own,
         friends: child.friends,
@@ -1104,7 +1107,7 @@ async fn run_child_inner(
                 }
             }
         }
-        if expires_at.is_some_and(|expiry| now_ms() >= expiry) {
+        if expires_at.is_some_and(|expiry| now_epoch() >= expiry) {
             break;
         }
     }
@@ -1128,7 +1131,7 @@ async fn capabilities(State(state): State<Shared>) -> axum::Json<Capabilities> {
         available: state.available.load(Ordering::Relaxed),
         unlock_key: b64::encode(state.unlock.public().as_bytes()),
         signing_key: b64::encode(state.signer.public().as_bytes()),
-        keys_valid_since_ms: state.keys_valid_since_ms,
+        keys_valid_since: state.keys_valid_since,
     })
 }
 
@@ -1164,8 +1167,8 @@ async fn status(
                     codes::COLLECTOR_UNAVAILABLE
                 }
                 .into(),
-                since_ms: None,
-                last_chunk_at_ms: None,
+                since: None,
+                last_chunk_at: None,
                 last_error: (!available).then(|| codes::COLLECTOR_UNAVAILABLE.into()),
             }
         });
@@ -1203,9 +1206,9 @@ async fn unlock(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid unlock payload").into_response(),
     };
     if payload.version != 1
-        || payload.expires_at.is_some_and(|expiry| {
-            expiry <= now_ms() || expiry > now_ms() + 30 * 24 * 60 * 60 * 1000
-        })
+        || payload
+            .expires_at
+            .is_some_and(|expiry| expiry <= now_epoch() || expiry > now_epoch() + 30 * 24 * 60 * 60)
         || !(60..=900).contains(&payload.interval_seconds)
         || payload.vrchat_user_id.is_empty()
         || payload.vrchat_user_id.len() > 128
@@ -1281,8 +1284,8 @@ async fn unlock(
     ));
     let status = Arc::new(Mutex::new(SessionStatus {
         state: "starting".into(),
-        since_ms: Some(now_ms()),
-        last_chunk_at_ms: None,
+        since: Some(now_epoch()),
+        last_chunk_at: None,
         last_error: None,
     }));
     let (stop, receiver) = oneshot::channel();
@@ -1377,7 +1380,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         unlock: SealPrivateKey::generate(),
         signer: SignerKey::generate()?,
         available: AtomicBool::new(available),
-        keys_valid_since_ms: now_ms(),
+        keys_valid_since: now_epoch(),
         max_sessions: config.max_sessions.clamp(1, 256),
         unlock_guard: tokio::sync::Mutex::new(()),
         sessions: Mutex::new(HashMap::new()),
@@ -1464,6 +1467,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlock_accepts_legacy_dates_and_seconds_without_changing_intervals() {
+        for expiry in [
+            serde_json::json!(1784629815),
+            serde_json::json!(1784629815250_i64),
+            serde_json::json!("2026-07-21T05:30:15.250-05:00"),
+            serde_json::json!("2026-07-21 10:30:15.250"),
+        ] {
+            let payload: UnlockPayload = serde_json::from_value(serde_json::json!({
+                "version": 1, "vaultPk": "key", "vrchatUserId": "usr_1",
+                "cookies": {"auth": "cookie"}, "expiresAt": expiry, "intervalSeconds": 60
+            }))
+            .unwrap();
+            assert_eq!(payload.expires_at, Some(1784629815));
+            assert_eq!(payload.interval_seconds, 60);
+        }
+    }
 
     fn script(name: &str, body: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

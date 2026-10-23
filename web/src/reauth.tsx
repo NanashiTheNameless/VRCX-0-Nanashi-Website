@@ -15,7 +15,8 @@ function update(patch: Partial<Shared>) {
 
 function setVerifiedUntil(value: number) {
   clearTimeout(timer)
-  if (value > Date.now()) timer = setTimeout(() => setVerifiedUntil(0), value - Date.now())
+  const now = Math.floor(Date.now() / 1000)
+  if (value > now) timer = setTimeout(() => setVerifiedUntil(0), (value - now) * 1000)
   update({ until: value })
 }
 
@@ -39,14 +40,14 @@ export function useReauth(defaultMethod: string | null) {
   const { code, sent, until } = state
   const [sending, setSending] = useState(false)
   const [problem, setProblem] = useState('')
-  const verified = until > Date.now()
+  const verified = until > Math.floor(Date.now() / 1000)
 
   const confirm = async () => {
-    if (shared.until > Date.now()) return
+    if (shared.until > Math.floor(Date.now() / 1000)) return
     if (!code.trim()) throw new Error('Enter a verification code first.')
     await request('/reauth', { method: 'POST', body: JSON.stringify({ method, code: code.trim() }) })
     update({ code: '', sent: false })
-    setVerifiedUntil(Date.now() + WINDOW_MS)
+    setVerifiedUntil(Math.floor(Date.now() / 1000) + WINDOW_MS / 1000)
   }
   const sendCode = async () => {
     setSending(true)

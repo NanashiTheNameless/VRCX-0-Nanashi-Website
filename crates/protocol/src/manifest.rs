@@ -9,7 +9,7 @@ use crate::keys::{self, VaultKeys};
 use crate::{Error, Result};
 
 pub const DOMAIN: &[u8] = b"remotesync/v1/manifest";
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 const OLDEST_VERSION: u8 = 1;
 pub const MAX_REPLACED_RANGES: usize = 512;
 pub const CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
@@ -22,15 +22,15 @@ pub enum SignerKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct SignerEntry {
     pub key_id: String,
     pub public_key: ByteBuf,
     pub kind: SignerKind,
     pub label: String,
-    pub added_at_ms: i64,
+    pub added_at: i64,
     #[serde(default)]
-    pub expires_at_ms: Option<i64>,
+    pub expires_at: Option<i64>,
 }
 
 impl SignerEntry {
@@ -38,15 +38,15 @@ impl SignerEntry {
         public: &VerifyingKey,
         kind: SignerKind,
         label: impl Into<String>,
-        added_at_ms: i64,
+        added_at: i64,
     ) -> Self {
         Self {
             key_id: keys::key_id(public),
             public_key: ByteBuf::from(public.as_bytes().to_vec()),
             kind,
             label: label.into(),
-            added_at_ms,
-            expires_at_ms: None,
+            added_at,
+            expires_at: None,
         }
     }
 
@@ -381,14 +381,14 @@ impl Manifest {
 }
 
 impl SignerLookup for Manifest {
-    fn signer(&self, key_id: &str, at_ms: i64) -> Option<VerifyingKey> {
+    fn signer(&self, key_id: &str, at: i64) -> Option<VerifyingKey> {
         let entry = self.signers.iter().find(|entry| entry.key_id == key_id)?;
-        if at_ms < entry.added_at_ms - CLOCK_SKEW_MS {
+        if at < entry.added_at.saturating_sub(CLOCK_SKEW_MS / 1000) {
             return None;
         }
         if entry
-            .expires_at_ms
-            .is_some_and(|expires| at_ms > expires + CLOCK_SKEW_MS)
+            .expires_at
+            .is_some_and(|expires| at > expires.saturating_add(CLOCK_SKEW_MS / 1000))
         {
             return None;
         }
@@ -476,6 +476,32 @@ mod tests {
     }
 
     #[test]
+    fn verifies_legacy_manifest_signers_with_cbor_byte_keys() {
+        let keys = keys();
+        let signer = SignerKey::generate().unwrap();
+        let mut manifest = Manifest::new(keys.vault_id(), None);
+        manifest.v = 3;
+        manifest.signers.push(SignerEntry::new(
+            &signer.public(),
+            SignerKind::Device,
+            "PC",
+            -1,
+        ));
+        let raw = framing::to_cbor(&crate::time::legacy_value(&manifest)).unwrap();
+        let blob = framing::seal_signed(
+            DOMAIN,
+            &binding(&manifest.vault_id, manifest.manifest_seq),
+            &raw,
+            &[],
+            Signing::Manifest(keys.manifest_signing()),
+            &keys.public().vault_pk,
+        )
+        .unwrap();
+        let opened = open_manifest(&blob, manifest.manifest_seq, &keys, None).unwrap();
+        assert_eq!(opened.signers, manifest.signers);
+    }
+
+    #[test]
     fn round_trip_and_lookup() {
         let keys = keys();
         let device = SignerKey::generate().unwrap();
@@ -512,18 +538,18 @@ mod tests {
             "collector",
             10_000_000,
         );
-        entry.expires_at_ms = Some(20_000_000);
+        entry.expires_at = Some(20_000_000);
         manifest.add_signer(entry);
         let id = device.key_id();
         assert!(
             manifest
-                .signer(&id, 10_000_000 - CLOCK_SKEW_MS - 1)
+                .signer(&id, 10_000_000 - (CLOCK_SKEW_MS / 1000) - 1)
                 .is_none()
         );
         assert!(manifest.signer(&id, 15_000_000).is_some());
         assert!(
             manifest
-                .signer(&id, 20_000_000 + CLOCK_SKEW_MS + 1)
+                .signer(&id, 20_000_000 + (CLOCK_SKEW_MS / 1000) + 1)
                 .is_none()
         );
         assert!(manifest.remove_signer(&id));
@@ -741,5 +767,43 @@ mod tests {
             seal_manifest(&manifest, &keys),
             Err(Error::Mismatch("signer key id"))
         );
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignerEntryEpochFields {
+    pub key_id: String,
+    pub public_key: ByteBuf,
+    pub kind: SignerKind,
+    pub label: String,
+    pub added_at: i64,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
+impl TryFrom<ciborium::Value> for SignerEntry {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(
+            &mut value,
+            &[("addedAtMs", "addedAt"), ("expiresAtMs", "expiresAt")],
+        )?;
+        let SignerEntryEpochFields {
+            key_id,
+            public_key,
+            kind,
+            label,
+            added_at,
+            expires_at,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            key_id,
+            public_key,
+            kind,
+            label,
+            added_at,
+            expires_at,
+        })
     }
 }

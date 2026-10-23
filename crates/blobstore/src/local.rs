@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use vrcx_0_nanashi_website_protocol::blob::ListEntry;
 
@@ -111,15 +110,13 @@ impl LocalBackend {
                         return Ok((objects, next));
                     }
                     let meta = std::fs::metadata(dir.join(&name))?;
-                    let modified = meta
-                        .modified()?
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0);
+                    let modified = vrcx_0_nanashi_website_protocol::time::system_time_seconds(
+                        meta.modified()?,
+                    );
                     objects.push(ListEntry {
                         key,
                         size: meta.len(),
-                        last_modified_ms: modified,
+                        last_modified: modified,
                     });
                 }
                 Ok((objects, None))

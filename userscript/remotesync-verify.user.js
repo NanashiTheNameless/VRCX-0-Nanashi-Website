@@ -81,7 +81,8 @@
     const invalid = { ok: false, title: 'This server presents an official-instance signature that is not valid', detail: 'Treat it as run by an unknown party that tried to look official.' }
     if (!(await signedBy(INSTANCE_KEYS, statement, bytes(new TextDecoder().decode(signature))))) return invalid
     const parsed = JSON.parse(new TextDecoder().decode(statement))
-    if (parsed.v !== 1 || parsed.websiteOrigin !== location.origin || !(Date.now() <= parsed.expiresAtMs)) return invalid
+    const expiresAt = parsed.v === 1 && Number.isSafeInteger(parsed.expiresAtMs) ? Math.floor(parsed.expiresAtMs / 1000) : parsed.v === 2 && Number.isSafeInteger(parsed.expiresAt) ? parsed.expiresAt : null
+    if (expiresAt === null || parsed.websiteOrigin !== location.origin || Math.floor(Date.now() / 1000) > expiresAt) return invalid
     return { ok: true, title: 'Official VRCX-0-Nanashi instance' }
   }
 

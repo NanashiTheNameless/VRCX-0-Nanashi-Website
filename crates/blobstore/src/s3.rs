@@ -32,10 +32,7 @@ async fn status_error(context: &str, response: reqwest::Response) -> BackendErro
 }
 
 pub fn parse_last_modified(value: &str) -> i64 {
-    value
-        .parse::<jiff::Timestamp>()
-        .map(|t| t.as_millisecond())
-        .unwrap_or(0)
+    vrcx_0_nanashi_website_protocol::time::parse_epoch_seconds(value).unwrap_or(0)
 }
 
 impl S3Backend {
@@ -170,7 +167,7 @@ impl S3Backend {
             .contents
             .into_iter()
             .map(|item| ListEntry {
-                last_modified_ms: parse_last_modified(&item.last_modified),
+                last_modified: parse_last_modified(&item.last_modified),
                 key: item.key,
                 size: item.size,
             })
@@ -246,7 +243,7 @@ mod tests {
     fn last_modified_parsing() {
         assert_eq!(
             parse_last_modified("2026-10-08T12:00:00.000Z"),
-            1_791_460_800_000
+            1_791_460_800
         );
         assert_eq!(parse_last_modified("garbage"), 0);
     }

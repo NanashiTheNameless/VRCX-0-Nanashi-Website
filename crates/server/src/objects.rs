@@ -64,7 +64,7 @@ impl ObjectStore {
             }
             #[cfg(test)]
             Self::Memory(map) => {
-                Self::memory_map(map).insert(key.to_owned(), (data, crate::util::now_ms()));
+                Self::memory_map(map).insert(key.to_owned(), (data, crate::util::now_epoch()));
                 Ok(())
             }
         }
@@ -175,7 +175,7 @@ impl ObjectStore {
                 .map(|(key, (data, at))| ListEntry {
                     key: key.clone(),
                     size: data.len() as u64,
-                    last_modified_ms: *at,
+                    last_modified: *at,
                 })
                 .collect()),
         }
@@ -206,9 +206,9 @@ impl ObjectStore {
     }
 
     #[cfg(test)]
-    pub fn memory_insert(&self, key: &str, data: Vec<u8>, at_ms: i64) {
+    pub fn memory_insert(&self, key: &str, data: Vec<u8>, at: i64) {
         if let Self::Memory(map) = self {
-            Self::memory_map(map).insert(key.to_owned(), (data, at_ms));
+            Self::memory_map(map).insert(key.to_owned(), (data, at));
         }
     }
 }

@@ -5,6 +5,7 @@ pub mod chunk;
 pub mod envelope;
 pub mod error;
 mod framing;
+pub mod history;
 pub mod ids;
 pub mod keys;
 pub mod live;
@@ -18,3 +19,5 @@ pub mod token;
 pub mod transfer;
 
 pub use error::{Error, Result};
+
+pub mod time;

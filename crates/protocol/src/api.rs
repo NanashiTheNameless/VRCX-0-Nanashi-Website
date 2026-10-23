@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AccountId, ChunkId, VaultId};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const SERVER_NAME: &str = "vrcx-0-nanashi-website";
 
 pub mod headers {
@@ -105,12 +105,12 @@ pub struct Capabilities {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct CollectorCapabilities {
     pub available: bool,
     pub unlock_key: String,
     pub signing_key: String,
-    pub keys_valid_since_ms: i64,
+    pub keys_valid_since: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,16 +195,16 @@ pub struct ClientLocation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct ClientIpEntry {
     pub ip: String,
     pub location: ClientLocation,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
+    pub first_seen: i64,
+    pub last_seen: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct ClientInfo {
     pub client_id: String,
     pub kind: ClientKind,
@@ -213,21 +213,21 @@ pub struct ClientInfo {
     pub scopes: Vec<Scope>,
     pub current: bool,
     pub active_now: bool,
-    pub revoked_at_ms: Option<i64>,
-    pub first_seen_ms: Option<i64>,
-    pub last_seen_ms: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub first_seen: Option<i64>,
+    pub last_seen: Option<i64>,
     pub current_ip: Option<ClientIpEntry>,
     #[serde(default)]
     pub history: Vec<ClientIpEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct VaultInfo {
     pub vault_id: VaultId,
     pub vault_pk: String,
     pub manifest_pk: String,
-    pub created_at_ms: i64,
+    pub created_at: i64,
     pub max_seq: u64,
     pub manifest_seq: u64,
     pub usage_bytes: u64,
@@ -293,11 +293,11 @@ pub enum CollectorState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct CollectorStatus {
     pub state: CollectorState,
-    pub since_ms: Option<i64>,
-    pub last_chunk_at_ms: Option<i64>,
+    pub since: Option<i64>,
+    pub last_chunk_at: Option<i64>,
     pub last_error: Option<String>,
 }
 
@@ -455,5 +455,192 @@ mod tests {
     #[test]
     fn max_chunk_bytes_includes_overhead() {
         assert_eq!(MAX_CHUNK_BYTES, 4 * 1024 * 1024 + 48);
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectorCapabilitiesEpochFields {
+    pub available: bool,
+    pub unlock_key: String,
+    pub signing_key: String,
+    pub keys_valid_since: i64,
+}
+
+impl TryFrom<ciborium::Value> for CollectorCapabilities {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("keysValidSinceMs", "keysValidSince")])?;
+        let CollectorCapabilitiesEpochFields {
+            available,
+            unlock_key,
+            signing_key,
+            keys_valid_since,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            available,
+            unlock_key,
+            signing_key,
+            keys_valid_since,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientIpEntryEpochFields {
+    pub ip: String,
+    pub location: ClientLocation,
+    pub first_seen: i64,
+    pub last_seen: i64,
+}
+
+impl TryFrom<ciborium::Value> for ClientIpEntry {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(
+            &mut value,
+            &[("firstSeenMs", "firstSeen"), ("lastSeenMs", "lastSeen")],
+        )?;
+        let ClientIpEntryEpochFields {
+            ip,
+            location,
+            first_seen,
+            last_seen,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            ip,
+            location,
+            first_seen,
+            last_seen,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientInfoEpochFields {
+    pub client_id: String,
+    pub kind: ClientKind,
+    pub label: String,
+    pub client_version: Option<String>,
+    pub scopes: Vec<Scope>,
+    pub current: bool,
+    pub active_now: bool,
+    pub revoked_at: Option<i64>,
+    pub first_seen: Option<i64>,
+    pub last_seen: Option<i64>,
+    pub current_ip: Option<ClientIpEntry>,
+    #[serde(default)]
+    pub history: Vec<ClientIpEntry>,
+}
+
+impl TryFrom<ciborium::Value> for ClientInfo {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(
+            &mut value,
+            &[
+                ("revokedAtMs", "revokedAt"),
+                ("firstSeenMs", "firstSeen"),
+                ("lastSeenMs", "lastSeen"),
+            ],
+        )?;
+        let ClientInfoEpochFields {
+            client_id,
+            kind,
+            label,
+            client_version,
+            scopes,
+            current,
+            active_now,
+            revoked_at,
+            first_seen,
+            last_seen,
+            current_ip,
+            history,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            client_id,
+            kind,
+            label,
+            client_version,
+            scopes,
+            current,
+            active_now,
+            revoked_at,
+            first_seen,
+            last_seen,
+            current_ip,
+            history,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultInfoEpochFields {
+    pub vault_id: VaultId,
+    pub vault_pk: String,
+    pub manifest_pk: String,
+    pub created_at: i64,
+    pub max_seq: u64,
+    pub manifest_seq: u64,
+    pub usage_bytes: u64,
+}
+
+impl TryFrom<ciborium::Value> for VaultInfo {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("createdAtMs", "createdAt")])?;
+        let VaultInfoEpochFields {
+            vault_id,
+            vault_pk,
+            manifest_pk,
+            created_at,
+            max_seq,
+            manifest_seq,
+            usage_bytes,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            vault_id,
+            vault_pk,
+            manifest_pk,
+            created_at,
+            max_seq,
+            manifest_seq,
+            usage_bytes,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectorStatusEpochFields {
+    pub state: CollectorState,
+    pub since: Option<i64>,
+    pub last_chunk_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+impl TryFrom<ciborium::Value> for CollectorStatus {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(
+            &mut value,
+            &[("sinceMs", "since"), ("lastChunkAtMs", "lastChunkAt")],
+        )?;
+        let CollectorStatusEpochFields {
+            state,
+            since,
+            last_chunk_at,
+            last_error,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            state,
+            since,
+            last_chunk_at,
+            last_error,
+        })
     }
 }

@@ -34,11 +34,11 @@ pub fn prefix(prefix_hex: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct ListEntry {
     pub key: String,
     pub size: u64,
-    pub last_modified_ms: i64,
+    pub last_modified: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,5 +84,30 @@ mod tests {
         assert!(!is_object_key(&format!("v1/{}/{id}", p.to_uppercase())));
         assert!(!is_prefix("v1/"));
         assert!(!is_prefix(&format!("v1/{p}")));
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListEntryEpochFields {
+    pub key: String,
+    pub size: u64,
+    pub last_modified: i64,
+}
+
+impl TryFrom<ciborium::Value> for ListEntry {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("lastModifiedMs", "lastModified")])?;
+        let ListEntryEpochFields {
+            key,
+            size,
+            last_modified,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            key,
+            size,
+            last_modified,
+        })
     }
 }

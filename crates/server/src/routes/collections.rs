@@ -12,7 +12,7 @@ use crate::db::account::{AccountStore, StoreError};
 use crate::db::registry::AccountRow;
 use crate::http::{ApiErr, ApiResult};
 use crate::state::{AppState, Shared};
-use crate::util::now_ms;
+use crate::util::now_epoch;
 
 const MAX_COLLECTIONS: i64 = 100;
 const MAX_WORLDS: usize = 500;
@@ -105,7 +105,7 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     auth.require(Scope::Share)?;
     validate(&snapshot)?;
-    snapshot.updated_at = now_ms() / 1000;
+    snapshot.updated_at = now_epoch();
     let out = state
         .run(move |state| {
             let store = owned_store(state, &auth.account)?;
@@ -133,7 +133,7 @@ pub async fn create(
                 .put_collection(
                     &code,
                     &body,
-                    now_ms(),
+                    now_epoch(),
                     AppState::limits(&auth.account),
                     MAX_COLLECTIONS,
                 )
@@ -158,7 +158,7 @@ pub async fn create(
                 } else {
                     None
                 },
-                now_ms(),
+                now_epoch(),
             )?;
             state.refresh_usage(&auth.account.account_id, &store)?;
             let origin = state
@@ -205,7 +205,7 @@ pub async fn update(
     let code = normalize_code(&code)?;
     validate(&snapshot)?;
     snapshot.id = code.clone();
-    snapshot.updated_at = now_ms() / 1000;
+    snapshot.updated_at = now_epoch();
     let body = serde_json::to_string(&snapshot)
         .map_err(|error| ApiErr::internal("collection encode", error))?;
     if body.len() > MAX_BODY_BYTES {
@@ -228,7 +228,7 @@ pub async fn update(
                 .put_collection(
                     &code,
                     &body,
-                    now_ms(),
+                    now_epoch(),
                     AppState::limits(&auth.account),
                     MAX_COLLECTIONS,
                 )
@@ -243,7 +243,7 @@ pub async fn update(
                 } else {
                     None
                 },
-                now_ms(),
+                now_epoch(),
             )?;
             state.refresh_usage(&auth.account.account_id, &store)?;
             Ok(Json(snapshot))
@@ -289,21 +289,33 @@ async fn directory(
     State(state): State<Shared>,
     Query(query): Query<DirectoryQuery>,
 ) -> ApiResult<Json<Vec<Value>>> {
-    state.run(move |state| {
-        let q = query.q.unwrap_or_default().to_lowercase();
-        let category = query.category.unwrap_or_default().to_lowercase();
-        let before = query.before;
-        if query.listed == Some(false) { return Ok(Json(Vec::new())); }
-        let rows = state.registry().listed_collections()?;
-        let result = rows.into_iter().filter(|(_, _, title, cat, _)| {
-            (q.is_empty() || title.to_lowercase().contains(&q))
-                && (category.is_empty() || cat.as_deref().unwrap_or_default().to_lowercase() == category)
-        }).filter(|(_, _, _, _, updated_at_ms)| before.is_none_or(|cursor| updated_at_ms / 1000 < cursor))
-        .take(100).map(|(code, _owner, title, category, updated_at_ms)| serde_json::json!({
-            "id": code, "title": title, "category": category, "updated_at": updated_at_ms / 1000,
-        })).collect();
-        Ok(Json(result))
-    }).await
+    state
+        .run(move |state| {
+            let q = query.q.unwrap_or_default().to_lowercase();
+            let category = query.category.unwrap_or_default().to_lowercase();
+            let before = query.before;
+            if query.listed == Some(false) {
+                return Ok(Json(Vec::new()));
+            }
+            let rows = state.registry().listed_collections()?;
+            let result = rows
+                .into_iter()
+                .filter(|(_, _, title, cat, _)| {
+                    (q.is_empty() || title.to_lowercase().contains(&q))
+                        && (category.is_empty()
+                            || cat.as_deref().unwrap_or_default().to_lowercase() == category)
+                })
+                .filter(|(_, _, _, _, updated_at)| before.is_none_or(|cursor| *updated_at < cursor))
+                .take(100)
+                .map(|(code, _owner, title, category, updated_at)| {
+                    serde_json::json!({
+                        "id": code, "title": title, "category": category, "updated_at": updated_at,
+                    })
+                })
+                .collect();
+            Ok(Json(result))
+        })
+        .await
 }
 
 async fn public_get(

@@ -8,7 +8,7 @@ use crate::seal::SealPublicKey;
 use crate::{Error, Result};
 
 pub const DOMAIN: &[u8] = b"remotesync/v1/live";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +19,7 @@ pub struct LiveSelf {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct LiveFriend {
     pub user_id: String,
     pub display_name: String,
@@ -27,7 +27,7 @@ pub struct LiveFriend {
     pub status_description: String,
     pub location: String,
     pub platform: String,
-    pub last_seen_at_ms: i64,
+    pub last_seen_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,12 +40,12 @@ pub struct LiveInstance {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct LiveSnapshot {
     pub v: u8,
     pub vault_id: VaultId,
     pub live_seq: u64,
-    pub created_at_ms: i64,
+    pub created_at: i64,
     pub signer_key_id: String,
     pub own: LiveSelf,
     pub friends: Vec<LiveFriend>,
@@ -61,6 +61,9 @@ pub fn seal_live(
     signer: &SignerKey,
     vault_pk: &SealPublicKey,
 ) -> Result<Vec<u8>> {
+    if snapshot.v != VERSION {
+        return Err(Error::Invalid("live snapshot version"));
+    }
     if snapshot.signer_key_id != signer.key_id() {
         return Err(Error::Mismatch("signer key id"));
     }
@@ -92,11 +95,11 @@ pub fn open_live(
     let claimed: LiveSnapshot =
         framing::from_cbor(&framing::decompress(&body_bytes)?, "live snapshot")?;
     let public = signers
-        .signer(&claimed.signer_key_id, claimed.created_at_ms)
+        .signer(&claimed.signer_key_id, claimed.created_at)
         .ok_or(Error::UnknownSigner)?;
     let (_, body) = unverified.verify(&public)?;
     let snapshot: LiveSnapshot = framing::from_cbor(&framing::decompress(&body)?, "live snapshot")?;
-    if snapshot.v != VERSION {
+    if !(1..=VERSION).contains(&snapshot.v) {
         return Err(Error::Invalid("live snapshot version"));
     }
     if snapshot.vault_id != vault_id || snapshot.live_seq != live_seq {
@@ -126,7 +129,7 @@ mod tests {
             v: VERSION,
             vault_id: keys.vault_id(),
             live_seq: 4,
-            created_at_ms: 1000,
+            created_at: 1000,
             signer_key_id: collector.key_id(),
             own: LiveSelf::default(),
             friends: vec![LiveFriend {
@@ -136,17 +139,112 @@ mod tests {
                 status_description: String::new(),
                 location: "wrld_1:1".into(),
                 platform: "standalonewindows".into(),
-                last_seen_at_ms: 1000,
+                last_seen_at: 1000,
             }],
             instances: vec![],
         };
         let blob = seal_live(&snapshot, &collector, &keys.public().vault_pk).unwrap();
         assert_eq!(open_live(&blob, 4, &keys, &manifest).unwrap(), snapshot);
+        let mut legacy = snapshot.clone();
+        legacy.v = 1;
+        let body =
+            framing::compress(&framing::to_cbor(&crate::time::legacy_value(&legacy)).unwrap());
+        let legacy_blob = framing::seal_signed(
+            DOMAIN,
+            &binding(&keys.vault_id(), legacy.live_seq),
+            &[],
+            &body,
+            Signing::Signer(&collector),
+            &keys.public().vault_pk,
+        )
+        .unwrap();
+        assert_eq!(
+            open_live(&legacy_blob, 4, &keys, &manifest).unwrap(),
+            legacy
+        );
+
         assert_eq!(open_live(&blob, 5, &keys, &manifest), Err(Error::Decrypt));
         let empty = Manifest::new(keys.vault_id(), None);
         assert_eq!(
             open_live(&blob, 4, &keys, &empty),
             Err(Error::UnknownSigner)
         );
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveFriendEpochFields {
+    pub user_id: String,
+    pub display_name: String,
+    pub status: String,
+    pub status_description: String,
+    pub location: String,
+    pub platform: String,
+    pub last_seen_at: i64,
+}
+
+impl TryFrom<ciborium::Value> for LiveFriend {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("lastSeenAtMs", "lastSeenAt")])?;
+        let LiveFriendEpochFields {
+            user_id,
+            display_name,
+            status,
+            status_description,
+            location,
+            platform,
+            last_seen_at,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            user_id,
+            display_name,
+            status,
+            status_description,
+            location,
+            platform,
+            last_seen_at,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveSnapshotEpochFields {
+    pub v: u8,
+    pub vault_id: VaultId,
+    pub live_seq: u64,
+    pub created_at: i64,
+    pub signer_key_id: String,
+    pub own: LiveSelf,
+    pub friends: Vec<LiveFriend>,
+    pub instances: Vec<LiveInstance>,
+}
+
+impl TryFrom<ciborium::Value> for LiveSnapshot {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("createdAtMs", "createdAt")])?;
+        let LiveSnapshotEpochFields {
+            v,
+            vault_id,
+            live_seq,
+            created_at,
+            signer_key_id,
+            own,
+            friends,
+            instances,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            v,
+            vault_id,
+            live_seq,
+            created_at,
+            signer_key_id,
+            own,
+            friends,
+            instances,
+        })
     }
 }

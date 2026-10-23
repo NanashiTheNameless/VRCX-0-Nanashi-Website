@@ -16,7 +16,7 @@ use crate::db::account::{AccountStore, Limits, ObjectId};
 use crate::db::registry::{AccountRow, AccountState, DeletionKind, Registry};
 use crate::http::{ApiErr, ApiResult};
 use crate::objects::ObjectStore;
-use crate::util::{DAY_MS, now_ms, random_bytes};
+use crate::util::{DAY_MS, now_epoch, random_bytes};
 
 pub const INFO_BLOB: &[u8] = b"remotesync/v1/blob";
 pub const INFO_BLOB_PREFIX: &[u8] = b"remotesync/v1/blob-prefix";
@@ -102,7 +102,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct LiveSnapshotRecord {
     pub seq: u64,
-    pub published_at_ms: i64,
+    pub published_at: i64,
     pub blob: Vec<u8>,
 }
 
@@ -152,7 +152,7 @@ impl AppState {
             && snapshots.len() >= MAX_LIVE_SNAPSHOTS
             && let Some(oldest) = snapshots
                 .iter()
-                .min_by_key(|(_, snapshot)| snapshot.published_at_ms)
+                .min_by_key(|(_, snapshot)| snapshot.published_at)
                 .map(|(key, _)| key.clone())
         {
             snapshots.remove(&oldest);
@@ -161,7 +161,7 @@ impl AppState {
             key,
             LiveSnapshotRecord {
                 seq,
-                published_at_ms: now_ms(),
+                published_at: now_epoch(),
                 blob,
             },
         );
@@ -209,11 +209,11 @@ impl AppState {
         let mut writes = self.client_writes.lock().unwrap_or_else(|p| p.into_inner());
         let key = (client_id.to_owned(), ip.to_owned());
         match writes.get(&key) {
-            Some(last) if now - last < CLIENT_WRITE_INTERVAL_MS => false,
+            Some(last) if now - last < (CLIENT_WRITE_INTERVAL_MS / 1000) => false,
             _ => {
                 writes.insert(key, now);
                 if writes.len() > 100_000 {
-                    writes.retain(|_, last| now - *last < CLIENT_WRITE_INTERVAL_MS);
+                    writes.retain(|_, last| now - *last < (CLIENT_WRITE_INTERVAL_MS / 1000));
                 }
                 true
             }
@@ -300,7 +300,7 @@ impl AppState {
 
     pub fn rate(&self, rule: crate::rate::Rule, key: &str) -> ApiResult<()> {
         self.limiter
-            .take(rule, key, now_ms())
+            .take(rule, key, now_epoch())
             .map_err(ApiErr::rate_limited)
     }
 
@@ -359,7 +359,7 @@ impl AppState {
                 .map_err(|error| ApiErr::internal("delete account file", error))?;
             registry.set_wrapped_adk(account_id, None)?;
             registry.set_usage(account_id, 0)?;
-            registry.audit(actor, "forbid-sync", Some(account_id), now_ms())?;
+            registry.audit(actor, "forbid-sync", Some(account_id), now_epoch())?;
         }
         if !collections.is_empty() {
             let account = self
@@ -376,7 +376,7 @@ impl AppState {
     pub fn allow_sync(&self, account_id: &AccountId, actor: &str) -> ApiResult<()> {
         let registry = self.registry();
         registry.set_sync_allowed(account_id, true)?;
-        registry.audit(actor, "allow-sync", Some(account_id), now_ms())?;
+        registry.audit(actor, "allow-sync", Some(account_id), now_epoch())?;
         Ok(())
     }
 
@@ -390,7 +390,7 @@ impl AppState {
     pub async fn process_deletions(self: &Arc<Self>) -> ApiResult<()> {
         loop {
             let due = self
-                .run(|state| Ok(state.registry().due_deletions(now_ms(), 100)?))
+                .run(|state| Ok(state.registry().due_deletions(now_epoch(), 100)?))
                 .await?;
             if due.is_empty() {
                 return Ok(());
@@ -414,7 +414,7 @@ impl AppState {
                         self.run(move |state| {
                             Ok(state
                                 .registry()
-                                .retry_deletion(&target_for_db, now_ms() + backoff)?)
+                                .retry_deletion(&target_for_db, now_epoch() + backoff / 1000)?)
                         })
                         .await?;
                         return Ok(());
@@ -478,9 +478,9 @@ impl AppState {
                 .list_all(&keys.prefix())
                 .await
                 .map_err(ApiErr::storage)?;
-            let cutoff = now_ms() - DAY_MS;
+            let cutoff = now_epoch() - (DAY_MS / 1000);
             for entry in listed {
-                if !referenced.contains(&entry.key) && entry.last_modified_ms < cutoff {
+                if !referenced.contains(&entry.key) && entry.last_modified < cutoff {
                     self.objects
                         .delete(&entry.key)
                         .await
@@ -496,7 +496,7 @@ impl AppState {
         let registry = self.registry();
         let changed = registry.set_state(account_id, AccountState::Active)?;
         if changed {
-            registry.audit(actor, "approve", Some(account_id), now_ms())?;
+            registry.audit(actor, "approve", Some(account_id), now_epoch())?;
         }
         Ok(changed)
     }

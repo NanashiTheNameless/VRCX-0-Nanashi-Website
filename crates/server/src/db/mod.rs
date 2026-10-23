@@ -1,6 +1,9 @@
 pub mod account;
 pub mod registry;
 
+#[cfg(test)]
+mod epoch_tests;
+
 use std::path::Path;
 use std::time::Duration;
 

@@ -106,17 +106,17 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    fn level(&self, rule: Rule, key: &str, now_ms: i64, take: bool) -> Result<(), u64> {
+    fn level(&self, rule: Rule, key: &str, now: i64, take: bool) -> Result<(), u64> {
         let mut buckets = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
         if buckets.len() > 200_000 {
             buckets.retain(|_, (tokens, _)| *tokens < 1.0);
         }
         let entry = buckets
             .entry((rule.name, key.to_owned()))
-            .or_insert((rule.capacity, now_ms));
-        let elapsed = (now_ms - entry.1).max(0) as f64 / 1000.0;
+            .or_insert((rule.capacity, now));
+        let elapsed = (now - entry.1).max(0) as f64;
         entry.0 = (entry.0 + elapsed * rule.per_second).min(rule.capacity);
-        entry.1 = now_ms;
+        entry.1 = now;
         if entry.0 < 1.0 {
             let wait = ((1.0 - entry.0) / rule.per_second).ceil() as u64;
             return Err(wait.max(1));
@@ -127,16 +127,16 @@ impl RateLimiter {
         Ok(())
     }
 
-    pub fn take(&self, rule: Rule, key: &str, now_ms: i64) -> Result<(), u64> {
-        self.level(rule, key, now_ms, true)
+    pub fn take(&self, rule: Rule, key: &str, now: i64) -> Result<(), u64> {
+        self.level(rule, key, now, true)
     }
 
-    pub fn check(&self, rule: Rule, key: &str, now_ms: i64) -> Result<(), u64> {
-        self.level(rule, key, now_ms, false)
+    pub fn check(&self, rule: Rule, key: &str, now: i64) -> Result<(), u64> {
+        self.level(rule, key, now, false)
     }
 
-    pub fn fail(&self, rule: Rule, key: &str, now_ms: i64) {
-        let _ = self.take(rule, key, now_ms);
+    pub fn fail(&self, rule: Rule, key: &str, now: i64) {
+        let _ = self.take(rule, key, now);
     }
 }
 
@@ -152,7 +152,7 @@ mod tests {
         assert!(limiter.take(rule, "ip", 0).is_ok());
         assert_eq!(limiter.take(rule, "ip", 0), Err(30));
         assert!(limiter.take(rule, "other", 0).is_ok());
-        assert!(limiter.take(rule, "ip", 30_000).is_ok());
+        assert!(limiter.take(rule, "ip", 30).is_ok());
     }
 
     #[test]

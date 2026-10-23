@@ -21,3 +21,13 @@ test('origins with a path or plain http are refused', () => {
   assert.throws(() => instanceStatement('https://api.example.com/', 'https://www.example.com'))
   assert.throws(() => instanceStatement('https://api.example.com', 'https://www.example.com/site'))
 })
+
+test('new statements carry signed seconds while old signed bytes remain verifiable', () => {
+  const pair = generateKeyPairSync('ed25519')
+  const statement = instanceStatement('https://api.example.com', 'https://www.example.com', -1, 1)
+  assert.deepEqual(JSON.parse(statement), { v: 2, apiOrigin: 'https://api.example.com', websiteOrigin: 'https://www.example.com', issuedAt: -1, expiresAt: 86399 })
+  const old = '{"v":1,"issuedAtMs":-1,"expiresAtMs":1784629815250}'
+  const signature = signInstance(old, pem(pair.privateKey))
+  assert.equal(verifyInstance(old, signature, pem(pair.publicKey)), true)
+  assert.equal(verifyInstance(JSON.stringify(JSON.parse(statement)), signature, pem(pair.publicKey)), false)
+})

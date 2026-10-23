@@ -71,7 +71,7 @@ impl ApiErr {
         Self::new(
             StatusCode::FORBIDDEN,
             codes::REAUTH_REQUIRED,
-            "Enter a 2FA code first (POST /v1/account/reauth).",
+            "Enter a 2FA code first (POST /v2/account/reauth).",
         )
     }
 

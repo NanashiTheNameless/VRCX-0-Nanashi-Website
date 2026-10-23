@@ -203,7 +203,7 @@ mod tests {
         let listed: ListResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(listed.objects.len(), 3);
         assert_eq!(listed.objects[0].key, key(1));
-        assert!(listed.objects[0].last_modified_ms > 0);
+        assert!(listed.objects[0].last_modified > 0);
 
         let (status, _) = call(
             &router,

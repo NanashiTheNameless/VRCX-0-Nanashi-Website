@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::net::UnixListener;
 
 use crate::state::Shared;
-use crate::util::{DAY_MS, now_ms};
+use crate::util::{DAY_MS, now_epoch};
 
 pub const CLIENT_IP_RETENTION_MS: i64 = 90 * DAY_MS;
 
@@ -37,11 +37,12 @@ pub fn spawn_maintenance(state: Shared) {
             minutes += 1;
             let result = state
                 .run(move |state| {
-                    let now = now_ms();
+                    let now = now_epoch();
                     let registry = state.registry();
                     registry.prune_expired(now)?;
                     if run_daily {
-                        let removed = registry.prune_client_ips(now - CLIENT_IP_RETENTION_MS)?;
+                        let removed =
+                            registry.prune_client_ips(now - CLIENT_IP_RETENTION_MS / 1000)?;
                         if removed > 0 {
                             tracing::info!(removed, "pruned connection history older than 90 days");
                         }

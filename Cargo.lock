@@ -2477,6 +2477,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hkdf",
  "hpke",
+ "jiff",
  "ruzstd",
  "serde",
  "serde_bytes",

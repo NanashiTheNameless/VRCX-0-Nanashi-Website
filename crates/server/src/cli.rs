@@ -10,7 +10,7 @@ use crate::db::registry::{AccountRow, AccountState, Role};
 use crate::http::ApiErr;
 use crate::routes::v1::issue_api_token;
 use crate::state::{AppState, Shared};
-use crate::util::now_ms;
+use crate::util::now_epoch;
 
 const ACTOR: &str = "cli";
 
@@ -304,7 +304,7 @@ fn print_account(account: &AccountRow) {
                 "quotaBytes": account.quota_bytes,
                 "maxVaults": account.max_vaults,
                 "collectorAllowed": account.collector_allowed,
-                "createdAtMs": account.created_at_ms,
+                "createdAt": account.created_at,
             })
         );
         return;
@@ -320,7 +320,7 @@ fn print_account(account: &AccountRow) {
         format_size(account.quota_bytes),
         account.max_vaults,
         account.collector_allowed,
-        account.created_at_ms,
+        account.created_at,
     );
 }
 
@@ -582,7 +582,7 @@ fn invite(
                 &token_hmac,
                 &account_id,
                 "invite",
-                now + crate::routes::web::INVITE_TTL_MS,
+                now + (crate::routes::web::INVITE_TTL_MS / 1000),
                 None,
             )
             .map_err(|error| error.to_string())?;
@@ -614,7 +614,7 @@ pub fn run(state: &Shared, command: AdminCommand) -> CliResult {
 
 pub fn run_with_json(state: &Shared, command: AdminCommand, json: bool) -> CliResult {
     JSON_OUTPUT.with(|mode| mode.set(json));
-    let now = now_ms();
+    let now = now_epoch();
     let result = (|| {
         match command {
             AdminCommand::Storage(StorageCommand::Check) => storage_check(state)?,
@@ -670,7 +670,7 @@ pub fn run_with_json(state: &Shared, command: AdminCommand, json: bool) -> CliRe
                 let pairing = registry
                     .pairing_by_user_code(&code)
                     .map_err(|e| e.to_string())?
-                    .filter(|p| p.expires_at_ms > now)
+                    .filter(|p| p.expires_at > now)
                     .ok_or("no pending pairing with that code")?;
                 let scopes = match scopes {
                     Some(names) => parse_scopes(&names)?,

@@ -71,14 +71,14 @@ struct Opened {
 struct ManifestSigners<'a>(&'a Manifest);
 
 impl SignerLookup for ManifestSigners<'_> {
-    fn signer(&self, id: &str, at_ms: i64) -> Option<ed25519_dalek::VerifyingKey> {
-        const SKEW_MS: i64 = manifest::CLOCK_SKEW_MS;
+    fn signer(&self, id: &str, at: i64) -> Option<ed25519_dalek::VerifyingKey> {
+        const SKEW_SECONDS: i64 = manifest::CLOCK_SKEW_MS / 1000;
         self.0.signers.iter().find_map(|entry| {
             if entry.key_id != id
-                || entry.added_at_ms > at_ms.saturating_add(SKEW_MS)
+                || entry.added_at > at.saturating_add(SKEW_SECONDS)
                 || entry
-                    .expires_at_ms
-                    .is_some_and(|expires| expires.saturating_add(SKEW_MS) < at_ms)
+                    .expires_at
+                    .is_some_and(|expires| expires.saturating_add(SKEW_SECONDS) < at)
             {
                 return None;
             }
@@ -255,8 +255,8 @@ fn manifest_op(op: &str, value: serde_json::Value) -> Result<serde_json::Value, 
             "signers": current.signers.iter().map(|signer| serde_json::json!({
                 "label": signer.label,
                 "kind": signer.kind,
-                "addedAtMs": signer.added_at_ms,
-                "expiresAtMs": signer.expires_at_ms,
+                "addedAt": signer.added_at,
+                "expiresAt": signer.expires_at,
             })).collect::<Vec<_>>(),
         })),
         "manifestRetention" => {

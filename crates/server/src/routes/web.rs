@@ -25,7 +25,7 @@ use crate::recovery;
 use crate::routes::v1::{RECENT_AUTH_MS, check_second_factor};
 use crate::state::{AppState, Shared};
 use crate::totp;
-use crate::util::{DAY_MS, now_ms, random_bytes};
+use crate::util::{DAY_MS, now_epoch, random_bytes};
 
 pub const SESSION_IDLE_MS: i64 = 12 * 60 * 60 * 1000;
 pub const SESSION_MAX_MS: i64 = 30 * DAY_MS;
@@ -127,7 +127,7 @@ async fn altcha_challenge(
                     "purpose".to_owned(),
                     serde_json::Value::String("auth".to_owned()),
                 )])),
-                expires_at: Some(now_ms() / 1000 + 300),
+                expires_at: Some(now_epoch() + 300),
                 hmac_signature_secret: Some(secret),
                 ..Default::default()
             })
@@ -221,7 +221,7 @@ fn admin_account_json(account: AccountRow) -> serde_json::Value {
     serde_json::json!({
         "accountId": account.account_id, "email": account.email,
         "state": account.state.as_str(), "role": account.role.as_str(),
-        "createdAtMs": account.created_at_ms, "usageBytes": account.usage_bytes,
+        "createdAt": account.created_at, "usageBytes": account.usage_bytes,
         "quotaBytes": account.quota_bytes, "maxVaults": account.max_vaults,
         "collectorAllowed": account.effective_collector_allowed(),
         "syncAllowed": account.sync_allowed,
@@ -355,7 +355,7 @@ async fn admin_set_state(
             }
             state
                 .registry()
-                .audit(&auth.token.token_id, action, Some(&account_id), now_ms())?;
+                .audit(&auth.token.token_id, action, Some(&account_id), now_epoch())?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await?;
@@ -402,7 +402,7 @@ async fn admin_role(
             state.registry().set_role(&id, role)?;
             state
                 .registry()
-                .audit(&auth.token.token_id, "role-change", Some(&id), now_ms())?;
+                .audit(&auth.token.token_id, "role-change", Some(&id), now_epoch())?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
@@ -500,7 +500,7 @@ async fn admin_deny(
             }
             state
                 .registry()
-                .audit(&auth.token.token_id, "deny", Some(&parsed_id), now_ms())?;
+                .audit(&auth.token.token_id, "deny", Some(&parsed_id), now_epoch())?;
             state.delete_account(&parsed_id)?;
             Ok((target.email, body.note))
         })
@@ -536,7 +536,7 @@ async fn admin_delete_account(
                 &auth.token.token_id,
                 "admin-delete",
                 Some(&parsed_id),
-                now_ms(),
+                now_epoch(),
             )?;
             state.delete_account(&parsed_id)?;
             Ok(target.email)
@@ -576,11 +576,16 @@ async fn admin_reset_2fa(
                         &parsed,
                         &token.token_id,
                         &auth.token.token_id,
-                        now_ms(),
+                        now_epoch(),
                     )?;
                 }
             }
-            registry.audit(&auth.token.token_id, "reset-2fa", Some(&parsed), now_ms())?;
+            registry.audit(
+                &auth.token.token_id,
+                "reset-2fa",
+                Some(&parsed),
+                now_epoch(),
+            )?;
             Ok(target.email)
         })
         .await?;
@@ -634,7 +639,7 @@ async fn admin_limits(
                 &auth.token.token_id,
                 "account-limits",
                 Some(&parsed),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -672,7 +677,7 @@ async fn admin_collector(
                 &auth.token.token_id,
                 "collector-access",
                 Some(&parsed),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -708,9 +713,9 @@ async fn admin_invite(
             let quota = effective_default_quota(state);
             let collector_default = effective_collector_default(state);
             let registry = state.registry();
-            registry.create_account(&id, &email, AccountState::Unverified, quota, now_ms())?;
+            registry.create_account(&id, &email, AccountState::Unverified, quota, now_epoch())?;
             registry.set_collector_allowed(&id, collector_default)?;
-            registry.audit(&auth.token.token_id, "invite", Some(&id), now_ms())?;
+            registry.audit(&auth.token.token_id, "invite", Some(&id), now_epoch())?;
             drop(registry);
             let invite = store_token(state, &id, "invite", INVITE_TTL_MS, None)?;
             Ok((email, web_link(state, "invite", &invite)))
@@ -819,7 +824,7 @@ async fn admin_update_settings(
                     if allowed { "true" } else { "false" },
                 )?;
             }
-            registry.audit(&auth.token.token_id, "settings-change", None, now_ms())?;
+            registry.audit(&auth.token.token_id, "settings-change", None, now_epoch())?;
             Ok(StatusCode::NO_CONTENT)
         })
         .await
@@ -832,7 +837,7 @@ async fn admin_audit(
     state.run(move |state| {
         admin_gate(state, &auth)?;
         let entries = state.registry().audit_entries(None)?;
-        Ok(Json(entries.into_iter().map(|(actor, action, target, at_ms)| serde_json::json!({"actor": actor, "action": action, "targetAccount": target, "atMs": at_ms})).collect()))
+        Ok(Json(entries.into_iter().map(|(actor, action, target, at)| serde_json::json!({"actor": actor, "action": action, "targetAccount": target, "at": at})).collect()))
     }).await
 }
 
@@ -856,7 +861,7 @@ fn store_token(
         &token_hash(state, &token),
         account,
         purpose,
-        now_ms() + ttl_ms,
+        now_epoch() + ttl_ms / 1000,
         data,
     )?;
     Ok(token)
@@ -877,7 +882,12 @@ fn check_token(
     };
     let registry = state.registry();
     let (account_id, data) = registry
-        .use_auth_token(&token_hash(state, token), purpose, now_ms(), max_attempts)?
+        .use_auth_token(
+            &token_hash(state, token),
+            purpose,
+            now_epoch(),
+            max_attempts,
+        )?
         .ok_or_else(invalid)?;
     let account = registry.account(&account_id)?.ok_or_else(invalid)?;
     Ok((account, data))
@@ -936,7 +946,7 @@ pub(crate) fn issue_session(
 ) -> ApiResult<String> {
     let (full, parts) =
         token::generate(TokenKind::Session).map_err(|e| ApiErr::internal("rng", e))?;
-    let now = now_ms();
+    let now = now_epoch();
     state.registry().insert_token(&NewToken {
         token_id: &parts.id,
         account_id: &account.account_id,
@@ -946,8 +956,8 @@ pub(crate) fn issue_session(
         scopes: ALL_SCOPES,
         label,
         client_version: None,
-        now_ms: now,
-        expires_at_ms: Some(now + SESSION_MAX_MS),
+        now,
+        expires_at: Some(now + (SESSION_MAX_MS / 1000)),
         idle_timeout_ms: Some(SESSION_IDLE_MS),
     })?;
     Ok(full.to_string())
@@ -978,9 +988,12 @@ pub(crate) async fn send_email_code(
     state
         .run(move |state| {
             let hash = state.keys.hmac(EMAIL_CODE_PURPOSE, code_for_db.as_bytes());
-            state
-                .registry()
-                .set_email_code(&account_id, purpose, &hash, now_ms() + CODE_TTL_MS)?;
+            state.registry().set_email_code(
+                &account_id,
+                purpose,
+                &hash,
+                now_epoch() + (CODE_TTL_MS / 1000),
+            )?;
             Ok(())
         })
         .await?;
@@ -1007,7 +1020,7 @@ fn check_email_code(
     let hash = state.keys.hmac(EMAIL_CODE_PURPOSE, code.as_bytes());
     Ok(state
         .registry()
-        .use_email_code(&account.account_id, purpose, &hash, now_ms())?)
+        .use_email_code(&account.account_id, purpose, &hash, now_epoch())?)
 }
 
 fn wrong_code() -> ApiErr {
@@ -1067,7 +1080,7 @@ async fn signup(
     let origin = ClientOrigin::from_headers(&headers).rate_key();
     state
         .limiter
-        .check(rate::SIGNUP_IP, &origin, now_ms())
+        .check(rate::SIGNUP_IP, &origin, now_epoch())
         .map_err(ApiErr::rate_limited)?;
     let captcha_signature = verify_auth_altcha(&state, &request.altcha)?;
     state.rate(rate::ALTCHA_USED, &format!("auth:{captcha_signature}"))?;
@@ -1096,7 +1109,7 @@ async fn signup(
                 finish_token(state, &invite)?;
                 let registry = state.registry();
                 registry.set_password_hash(&account.account_id, &hash)?;
-                registry.set_email_verified(&account.account_id, now_ms())?;
+                registry.set_email_verified(&account.account_id, now_epoch())?;
                 drop(registry);
                 let challenge = store_token(
                     state,
@@ -1134,7 +1147,7 @@ async fn signup(
                 &email,
                 AccountState::Unverified,
                 quota,
-                now_ms(),
+                now_epoch(),
             )?;
             registry.set_collector_allowed(&account_id, collector_default)?;
             registry.set_password_hash(&account_id, &hash)?;
@@ -1202,7 +1215,7 @@ async fn verify(
             finish_token(state, &request.token)?;
             state
                 .registry()
-                .set_email_verified(&account.account_id, now_ms())?;
+                .set_email_verified(&account.account_id, now_epoch())?;
             let challenge =
                 store_token(state, &account.account_id, "enroll", CHALLENGE_TTL_MS, None)?;
             Ok(Json(ChallengeResponse {
@@ -1307,7 +1320,7 @@ fn confirm_totp(state: &AppState, account: &AccountRow, code: &str) -> ApiResult
         .keys
         .unwrap(&totp_context(&account.account_id), &wrapped)
         .map_err(|e| ApiErr::internal("totp", e))?;
-    match totp::verify(&secret, code, now_ms(), 0) {
+    match totp::verify(&secret, code, now_epoch(), 0) {
         Some(step) => Ok(state
             .registry()
             .activate_pending_totp(&account.account_id, step)?),
@@ -1463,11 +1476,11 @@ async fn login(
     state.rate(rate::LOGIN_EMAIL, &email)?;
     state
         .limiter
-        .check(rate::LOGIN_FAILURE_IP, &origin, now_ms())
+        .check(rate::LOGIN_FAILURE_IP, &origin, now_epoch())
         .map_err(ApiErr::rate_limited)?;
     state
         .limiter
-        .check(rate::LOGIN_FAILURE_EMAIL, &email, now_ms())
+        .check(rate::LOGIN_FAILURE_EMAIL, &email, now_epoch())
         .map_err(ApiErr::rate_limited)?;
     state
         .run(move |state| {
@@ -1480,19 +1493,19 @@ async fn login(
                 passwords::verify_dummy(&request.password);
                 state
                     .limiter
-                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_ms());
+                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_epoch());
                 state
                     .limiter
-                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_ms());
+                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_epoch());
                 return Err(bad_credentials());
             };
             if !passwords::verify(&stored, &request.password) {
                 state
                     .limiter
-                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_ms());
+                    .fail(rate::LOGIN_FAILURE_IP, &origin, now_epoch());
                 state
                     .limiter
-                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_ms());
+                    .fail(rate::LOGIN_FAILURE_EMAIL, &email, now_epoch());
                 return Err(bad_credentials());
             }
             if account.state == AccountState::Unverified {
@@ -1575,7 +1588,7 @@ pub(crate) fn second_factor(
         .collect::<String>();
     let ok = match method {
         ReauthMethod::Email => check_email_code(state, account, email_purpose, &normalized_code)?,
-        other => check_second_factor(state, account, other, &normalized_code, now_ms())?,
+        other => check_second_factor(state, account, other, &normalized_code, now_epoch())?,
     };
     if ok && method == ReauthMethod::Recovery {
         let left = state.registry().recovery_codes_left(&account.account_id)?;
@@ -1622,7 +1635,7 @@ async fn login_second_factor(
                             &account.account_id,
                             &token.token_id,
                             "password-reset",
-                            now_ms(),
+                            now_epoch(),
                         )?;
                     }
                 }
@@ -1639,7 +1652,7 @@ async fn login_second_factor(
             .run(move |state| {
                 Ok(state
                     .registry()
-                    .set_recent_totp(&session_id, now_ms() + RECENT_AUTH_MS)?)
+                    .set_recent_totp(&session_id, now_epoch() + (RECENT_AUTH_MS / 1000))?)
             })
             .await?;
     }
@@ -1750,7 +1763,7 @@ async fn sign_out(State(state): State<Shared>, auth: WebAuth) -> ApiResult<Statu
                 &auth.account.account_id,
                 &auth.token.token_id,
                 &auth.token.token_id,
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -1771,8 +1784,8 @@ struct Me {
     sync_allowed: bool,
     collector_allowed: bool,
     admin_available: bool,
-    recent_auth_until_ms: i64,
-    recent_totp_until_ms: i64,
+    recent_auth_until: i64,
+    recent_totp_until: i64,
 }
 
 async fn web_collector_capabilities(
@@ -1819,15 +1832,15 @@ async fn me(State(state): State<Shared>, auth: WebAuth) -> ApiResult<Json<Me>> {
                 },
                 sync_allowed: !restricted && account.sync_allowed,
                 collector_allowed: !restricted && account.effective_collector_allowed(),
-                recent_auth_until_ms: if restricted {
+                recent_auth_until: if restricted {
                     0
                 } else {
-                    auth.token.recent_auth_until_ms
+                    auth.token.recent_auth_until
                 },
-                recent_totp_until_ms: if restricted {
+                recent_totp_until: if restricted {
                     0
                 } else {
-                    auth.token.recent_totp_until_ms
+                    auth.token.recent_totp_until
                 },
             }))
         })
@@ -1858,7 +1871,7 @@ async fn reauth(
             )? {
                 return Err(wrong_code());
             }
-            let until = now_ms() + RECENT_AUTH_MS;
+            let until = now_epoch() + (RECENT_AUTH_MS / 1000);
             let registry = state.registry();
             if request.method == ReauthMethod::Totp {
                 registry.set_recent_totp(&auth.token.token_id, until)?;
@@ -1906,7 +1919,7 @@ async fn twofa_totp_confirm(
                 &auth.token.token_id,
                 "twofa-change",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -1945,7 +1958,7 @@ async fn twofa_email_confirm(
                 &auth.token.token_id,
                 "twofa-change",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(StatusCode::NO_CONTENT)
         })
@@ -1983,7 +1996,7 @@ async fn regenerate_recovery_codes(
                 &auth.token.token_id,
                 "recovery-codes",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(plain)
         })
@@ -2025,7 +2038,7 @@ async fn change_password(
                         &auth.account.account_id,
                         &token.token_id,
                         &auth.token.token_id,
-                        now_ms(),
+                        now_epoch(),
                     )?;
                 }
             }
@@ -2033,7 +2046,7 @@ async fn change_password(
                 &auth.token.token_id,
                 "password-change",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(())
         })
@@ -2064,7 +2077,7 @@ async fn delete_account(State(state): State<Shared>, auth: WebAuth) -> ApiResult
         .run(move |state| {
             state
                 .registry()
-                .audit(&auth.token.token_id, "delete-account", None, now_ms())?;
+                .audit(&auth.token.token_id, "delete-account", None, now_epoch())?;
             state.delete_account(&auth.account.account_id)
         })
         .await?;
@@ -2123,7 +2136,7 @@ async fn create_token(
                 &auth.token.token_id,
                 "token-create",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(token)
         })
@@ -2145,7 +2158,7 @@ struct PairingInfo {
     user_code: String,
     device_label: String,
     requested_scopes: Vec<Scope>,
-    expires_at_ms: i64,
+    expires_at: i64,
 }
 
 fn pairing_not_found() -> ApiErr {
@@ -2160,7 +2173,7 @@ fn pending_pairing(state: &AppState, code: &str) -> ApiResult<crate::db::registr
     state
         .registry()
         .pairing_by_user_code(&code)?
-        .filter(|p| p.status == "pending" && p.expires_at_ms > now_ms())
+        .filter(|p| p.status == "pending" && p.expires_at > now_epoch())
         .ok_or_else(pairing_not_found)
 }
 
@@ -2178,7 +2191,7 @@ async fn pairing_info(
                 user_code: pairing.user_code,
                 device_label: pairing.device_label,
                 requested_scopes: pairing.requested_scopes,
-                expires_at_ms: pairing.expires_at_ms,
+                expires_at: pairing.expires_at,
             }))
         })
         .await
@@ -2216,7 +2229,7 @@ async fn pairing_approve(
                 &auth.token.token_id,
                 "pair-approve",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(pairing.device_label)
         })
@@ -2258,7 +2271,7 @@ struct EnvelopeInfo {
     envelope_id: String,
     kind: &'static str,
     label: String,
-    created_at_ms: i64,
+    created_at: i64,
 }
 
 fn envelope_kind(
@@ -2314,7 +2327,7 @@ async fn list_envelopes(
                         envelope_id: id,
                         kind: envelope_kind(&envelope),
                         label: envelope.label,
-                        created_at_ms: created,
+                        created_at: created,
                     });
                 }
             }
@@ -2347,7 +2360,7 @@ async fn create_envelope(
             store.put_envelope(
                 &envelope.envelope_id,
                 &body,
-                now_ms(),
+                now_epoch(),
                 AppState::limits(&auth.account),
                 MAX_ENVELOPES,
             )?;
@@ -2356,7 +2369,7 @@ async fn create_envelope(
                 &auth.token.token_id,
                 "envelope-create",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(())
         })
@@ -2392,7 +2405,7 @@ async fn get_envelope(
                 &auth.token.token_id,
                 "envelope-fetch",
                 Some(&auth.account.account_id),
-                now_ms(),
+                now_epoch(),
             )?;
             Ok(body)
         })

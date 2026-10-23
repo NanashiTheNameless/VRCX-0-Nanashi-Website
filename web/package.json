@@ -5,6 +5,7 @@
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.mjs scripts/*.test.mjs",
     "build": "node scripts/build-wasm.mjs && tsc -b && vite build && node scripts/manifest.mjs"
   },
   "dependencies": {

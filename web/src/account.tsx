@@ -7,7 +7,7 @@ import { manifestInfo, manifestRetention, transferCode, transferParse, transferR
 
 type Act = (work: () => Promise<void>) => Promise<void>
 type Location = { city: string | null; region: string | null; country: string | null }
-type IpEntry = { ip: string; location: Location; firstSeenMs: number; lastSeenMs: number }
+type IpEntry = { ip: string; location: Location; firstSeen: number; lastSeen: number }
 type Client = {
   clientId: string
   kind: 'desktop' | 'web-session' | 'manual-token'
@@ -16,13 +16,13 @@ type Client = {
   scopes: string[]
   current: boolean
   activeNow: boolean
-  revokedAtMs: number | null
-  firstSeenMs: number | null
-  lastSeenMs: number | null
+  revokedAt: number | null
+  firstSeen: number | null
+  lastSeen: number | null
   currentIp: IpEntry | null
   history: IpEntry[]
 }
-type Vault = { vaultId: string; createdAtMs: number; maxSeq: number; usageBytes: number }
+type Vault = { vaultId: string; createdAt: number; maxSeq: number; usageBytes: number }
 type World = { world_id: string; name: string; author_name: string; image_url: string; description: string; comment: string }
 type Collection = {
   id: string
@@ -49,7 +49,7 @@ const IMAGE_HOSTS = ['api.vrchat.cloud', 'assets.vrchat.com']
 const REFUSE_BELOW_LOG10 = 50 * Math.log10(2)
 const WARN_BELOW_LOG10 = 80 * Math.log10(2)
 
-const when = (value: number | null) => (value ? new Date(value).toLocaleString() : 'Never')
+const when = (value: number | null) => (value != null ? new Date(value * 1000).toLocaleString() : 'Never')
 const place = (location: Location) => [location.city, location.region, location.country].filter(Boolean).join(', ') || 'Unknown location'
 
 export function TotpSetup({ secret, uri, children }: { secret: string; uri: string; children?: React.ReactNode }) {
@@ -153,7 +153,7 @@ export function Clients({ act, twofaMethod }: { act: Act; twofaMethod: string | 
                     {client.scopes.length > 0 && <small>{client.scopes.join(', ')}</small>}
                   </td>
                   <td>{KINDS[client.kind] ?? client.kind}</td>
-                  <td>{client.revokedAtMs ? `Revoked ${when(client.revokedAtMs)}` : client.activeNow ? 'Active now' : `Last seen ${when(client.lastSeenMs)}`}</td>
+                  <td>{client.revokedAt != null ? `Revoked ${when(client.revokedAt)}` : client.activeNow ? 'Active now' : `Last seen ${when(client.lastSeen)}`}</td>
                   <td>
                     {client.currentIp ? <>{client.currentIp.ip}<small>{place(client.currentIp.location)}</small></> : 'Unknown'}
                     {client.history.length > 0 && (
@@ -162,11 +162,11 @@ export function Clients({ act, twofaMethod }: { act: Act; twofaMethod: string | 
                       </button>
                     )}
                     {open === client.clientId && client.history.map(entry => (
-                      <small key={`${entry.ip}-${entry.firstSeenMs}`}>{entry.ip}, {place(entry.location)}, {when(entry.firstSeenMs)} to {when(entry.lastSeenMs)}</small>
+                      <small key={`${entry.ip}-${entry.firstSeen}`}>{entry.ip}, {place(entry.location)}, {when(entry.firstSeen)} to {when(entry.lastSeen)}</small>
                     ))}
                   </td>
                   <td>
-                    {!client.revokedAtMs && !client.current && (
+                    {!client.revokedAt && !client.current && (
                       <button disabled={!reauth.ready} onClick={() => guarded(() => request(`/account/clients/${client.clientId}/revoke`, { method: 'POST' }))}>Revoke</button>
                     )}
                   </td>
@@ -313,7 +313,7 @@ export function YourData({ act, usageBytes, quotaBytes, email, twofaMethod, unlo
                 {vaults.map(vault => (
                   <tr key={vault.vaultId}>
                     <td>{vault.vaultId}{unlocked && <VaultSettings act={act} vaultId={vault.vaultId} hasLimit={quotaBytes !== null} />}</td>
-                    <td>{when(vault.createdAtMs)}</td>
+                    <td>{when(vault.createdAt)}</td>
                     <td>{vault.maxSeq}</td>
                     <td>{formatBytes(vault.usageBytes)}</td>
                     <td>
@@ -642,7 +642,7 @@ export function ChosenPassphrase({ act, accountId, twofaMethod, onSaved }: { act
   )
 }
 
-type PairInfo = { deviceLabel: string; userCode: string; expiresAtMs: number; requestedScopes: string[] }
+type PairInfo = { deviceLabel: string; userCode: string; expiresAt: number; requestedScopes: string[] }
 
 export function Pairing({ act, twofaMethod }: { act: Act; twofaMethod: string | null }) {
   const [code, setCode] = useState('')
@@ -664,7 +664,7 @@ export function Pairing({ act, twofaMethod }: { act: Act; twofaMethod: string | 
           <div className="pair-info">
             <b>{info.deviceLabel}</b>
             <span>Code: {info.userCode}</span>
-            <span>Expires: {when(info.expiresAtMs)}</span>
+            <span>Expires: {when(info.expiresAt)}</span>
           </div>
           {SCOPES.filter(([scope]) => info.requestedScopes.includes(scope)).map(([scope, text]) => (
             <label className="check-label" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggle(scope)} />{scope}: {text}</label>

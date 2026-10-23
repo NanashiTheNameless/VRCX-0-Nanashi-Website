@@ -22,13 +22,13 @@ pub fn format_code(code: u32) -> String {
     format!("{code:06}")
 }
 
-pub fn verify(secret: &[u8], code: &str, now_ms: i64, last_step: i64) -> Option<i64> {
+pub fn verify(secret: &[u8], code: &str, now: i64, last_step: i64) -> Option<i64> {
     let code = code.trim();
     if code.len() != DIGITS as usize || !code.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let wanted: u32 = code.parse().ok()?;
-    let current = now_ms.div_euclid(1000) / STEP_SECONDS;
+    let current = now / STEP_SECONDS;
     (current - 1..=current + 1)
         .filter(|step| *step > last_step)
         .find(|step| {
@@ -54,14 +54,14 @@ mod tests {
 
     #[test]
     fn accepts_drift_and_rejects_replay() {
-        let now_ms = 1_111_111_109_000;
-        let step = now_ms / 1000 / STEP_SECONDS;
+        let now = 1_111_111_109;
+        let step = now / STEP_SECONDS;
         let code = format_code(code_at(SECRET, step));
-        assert_eq!(verify(SECRET, &code, now_ms, 0), Some(step));
-        assert_eq!(verify(SECRET, &code, now_ms + 30_000, 0), Some(step));
-        assert_eq!(verify(SECRET, &code, now_ms + 90_000, 0), None);
-        assert_eq!(verify(SECRET, &code, now_ms, step), None);
-        assert_eq!(verify(SECRET, "12345", now_ms, 0), None);
-        assert_eq!(verify(SECRET, "abcdef", now_ms, 0), None);
+        assert_eq!(verify(SECRET, &code, now, 0), Some(step));
+        assert_eq!(verify(SECRET, &code, now + 30, 0), Some(step));
+        assert_eq!(verify(SECRET, &code, now + 90, 0), None);
+        assert_eq!(verify(SECRET, &code, now, step), None);
+        assert_eq!(verify(SECRET, "12345", now, 0), None);
+        assert_eq!(verify(SECRET, "abcdef", now, 0), None);
     }
 }

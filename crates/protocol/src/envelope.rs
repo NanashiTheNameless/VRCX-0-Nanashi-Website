@@ -12,7 +12,7 @@ use crate::{Error, Result, rand};
 
 pub const AAD_DOMAIN: &[u8] = b"remotesync/v1/envelope";
 pub const INFO_KEK: &[u8] = b"remotesync/v1/envelope-kek";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 16;
 pub const PRF_SALT_LEN: usize = 32;
@@ -80,12 +80,12 @@ impl EnvelopeLock {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "ciborium::Value")]
 pub struct KeyEnvelope {
     pub v: u8,
     pub envelope_id: String,
     pub label: String,
-    pub created_at_ms: i64,
+    pub created_at: i64,
     pub lock: EnvelopeLock,
     #[serde(with = "crate::b64")]
     pub nonce: Vec<u8>,
@@ -116,7 +116,7 @@ fn encrypt(
     secret: &SyncSecret,
     account_id: &AccountId,
     label: String,
-    created_at_ms: i64,
+    created_at: i64,
     envelope_id: String,
     lock: EnvelopeLock,
 ) -> Result<KeyEnvelope> {
@@ -134,7 +134,7 @@ fn encrypt(
         v: VERSION,
         envelope_id,
         label,
-        created_at_ms,
+        created_at,
         lock,
         nonce: nonce.to_vec(),
         ciphertext,
@@ -142,7 +142,7 @@ fn encrypt(
 }
 
 fn decrypt(kek: &[u8; 32], envelope: &KeyEnvelope, account_id: &AccountId) -> Result<SyncSecret> {
-    if envelope.v != VERSION {
+    if !(1..=VERSION).contains(&envelope.v) {
         return Err(Error::Invalid("envelope version"));
     }
     let nonce: [u8; NONCE_LEN] = envelope
@@ -209,7 +209,7 @@ pub fn seal_with_passphrase(
     label: impl Into<String>,
     passphrase: &str,
     generated: bool,
-    created_at_ms: i64,
+    created_at: i64,
 ) -> Result<KeyEnvelope> {
     seal_with_passphrase_cost(
         secret,
@@ -217,7 +217,7 @@ pub fn seal_with_passphrase(
         label,
         passphrase,
         generated,
-        created_at_ms,
+        created_at,
         Argon2Cost::RECOMMENDED,
     )
 }
@@ -228,7 +228,7 @@ fn seal_with_passphrase_cost(
     label: impl Into<String>,
     passphrase: &str,
     generated: bool,
-    created_at_ms: i64,
+    created_at: i64,
     cost: Argon2Cost,
 ) -> Result<KeyEnvelope> {
     if passphrase.is_empty() {
@@ -247,7 +247,7 @@ fn seal_with_passphrase_cost(
         secret,
         account_id,
         label.into(),
-        created_at_ms,
+        created_at,
         new_envelope_id()?,
         EnvelopeLock::Passphrase {
             cost,
@@ -294,7 +294,7 @@ pub fn seal_with_prf(
     credential_id: &[u8],
     prf_salt: &[u8; PRF_SALT_LEN],
     prf_output: &[u8; PRF_OUTPUT_LEN],
-    created_at_ms: i64,
+    created_at: i64,
 ) -> Result<KeyEnvelope> {
     let kek = hkdf32(&[], prf_output, INFO_KEK);
     encrypt(
@@ -302,7 +302,7 @@ pub fn seal_with_prf(
         secret,
         account_id,
         label.into(),
-        created_at_ms,
+        created_at,
         new_envelope_id()?,
         EnvelopeLock::PasskeyPrf {
             credential_id: credential_id.to_vec(),
@@ -335,6 +335,32 @@ mod tests {
 
     fn new_account() -> AccountId {
         AccountId::random().unwrap()
+    }
+
+    #[test]
+    fn opens_a_legacy_envelope_with_its_original_ciphertext() {
+        let account = AccountId::random().unwrap();
+        let secret = SyncSecret::generate().unwrap();
+        let mut envelope = seal_with_passphrase_cost(
+            &secret,
+            &account,
+            "PC",
+            "passphrase",
+            false,
+            -1,
+            Argon2Cost::MINIMUM,
+        )
+        .unwrap();
+        envelope.v = 1;
+        let raw = crate::time::legacy_value(&envelope);
+        let restored: KeyEnvelope = raw.deserialized().unwrap();
+        assert_eq!(restored.created_at, -1);
+        assert_eq!(
+            open_with_passphrase(&restored, &account, "passphrase")
+                .unwrap()
+                .expose(),
+            secret.expose()
+        );
     }
 
     #[test]
@@ -452,5 +478,44 @@ mod tests {
         assert_eq!(json["lock"]["kind"], "passkey-prf");
         let back: KeyEnvelope = serde_json::from_value(json).unwrap();
         assert_eq!(back, envelope);
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyEnvelopeEpochFields {
+    pub v: u8,
+    pub envelope_id: String,
+    pub label: String,
+    pub created_at: i64,
+    pub lock: EnvelopeLock,
+    #[serde(with = "crate::b64")]
+    pub nonce: Vec<u8>,
+    #[serde(with = "crate::b64")]
+    pub ciphertext: Vec<u8>,
+}
+
+impl TryFrom<ciborium::Value> for KeyEnvelope {
+    type Error = String;
+    fn try_from(mut value: ciborium::Value) -> core::result::Result<Self, Self::Error> {
+        crate::time::convert_legacy_fields(&mut value, &[("createdAtMs", "createdAt")])?;
+        let KeyEnvelopeEpochFields {
+            v,
+            envelope_id,
+            label,
+            created_at,
+            lock,
+            nonce,
+            ciphertext,
+        } = value.deserialized().map_err(|error| error.to_string())?;
+        Ok(Self {
+            v,
+            envelope_id,
+            label,
+            created_at,
+            lock,
+            nonce,
+            ciphertext,
+        })
     }
 }

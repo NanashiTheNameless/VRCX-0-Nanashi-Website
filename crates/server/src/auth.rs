@@ -9,14 +9,14 @@ use crate::db::registry::{AccountRow, AccountState, TokenRow};
 use crate::http::{ApiErr, ApiResult};
 use crate::rate;
 use crate::state::Shared;
-use crate::util::now_ms;
+use crate::util::now_epoch;
 
 pub const TOKEN_HMAC_PURPOSE: &str = "token";
 
 pub struct ApiAuth {
     pub account: AccountRow,
     pub token: TokenRow,
-    pub now_ms: i64,
+    pub now: i64,
 }
 
 impl ApiAuth {
@@ -61,7 +61,7 @@ impl ApiAuth {
                 "Set up an authenticator app to use your admin privileges.",
             ));
         }
-        if self.token.recent_totp_until_ms <= self.now_ms {
+        if self.token.recent_totp_until <= self.now {
             return Err(ApiErr::new(
                 axum::http::StatusCode::FORBIDDEN,
                 "totp_reauth_required",
@@ -88,7 +88,7 @@ impl ApiAuth {
     }
 
     pub fn require_recent_auth(&self) -> ApiResult<()> {
-        if self.token.recent_auth_until_ms > self.now_ms {
+        if self.token.recent_auth_until > self.now {
             Ok(())
         } else {
             Err(ApiErr::reauth_required())
@@ -177,7 +177,7 @@ impl FromRequestParts<Shared> for WebAuth {
             .map(|uri| uri.0.path().to_owned())
             .unwrap_or_else(|| parts.uri.path().to_owned());
         let auth = authenticate(parts, state, TokenKind::Session).await?;
-        if !matches!(path.as_str(), "/web/v1/me" | "/web/v1/session") {
+        if !matches!(path.as_str(), "/web/v2/me" | "/web/v2/session") {
             auth.require_active()?;
         }
         Ok(WebAuth(auth))
@@ -194,14 +194,16 @@ async fn authenticate(
         let rate_key = origin.rate_key();
         state
             .limiter
-            .check(rate::AUTH_FAILURES_IP, &rate_key, now_ms())
+            .check(rate::AUTH_FAILURES_IP, &rate_key, now_epoch())
             .map_err(ApiErr::rate_limited)?;
         let fail = |token_id: Option<&str>| {
             state
                 .limiter
-                .fail(rate::AUTH_FAILURES_IP, &rate_key, now_ms());
+                .fail(rate::AUTH_FAILURES_IP, &rate_key, now_epoch());
             if let Some(id) = token_id {
-                state.limiter.fail(rate::AUTH_FAILURES_TOKEN, id, now_ms());
+                state
+                    .limiter
+                    .fail(rate::AUTH_FAILURES_TOKEN, id, now_epoch());
             }
             ApiErr::unauthorized()
         };
@@ -218,13 +220,13 @@ async fn authenticate(
         };
         state
             .limiter
-            .check(rate::AUTH_FAILURES_TOKEN, &parsed.id, now_ms())
+            .check(rate::AUTH_FAILURES_TOKEN, &parsed.id, now_epoch())
             .map_err(ApiErr::rate_limited)?;
         let token_id = parsed.id.clone();
         let client_version = header_text(&parts.headers, headers::CLIENT, 200);
         let result = state
             .run(move |state| {
-                let now = now_ms();
+                let now = now_epoch();
                 let registry = state.registry();
                 let token = registry
                     .token(&parsed.id)?
@@ -236,10 +238,12 @@ async fn authenticate(
                 };
                 let valid = token.kind == expected_kind
                     && constant_time_eq(&expected, &token.secret_hmac)
-                    && token.revoked_at_ms.is_none()
-                    && token.expires_at_ms.is_none_or(|expires| expires > now)
+                    && token.revoked_at.is_none()
+                    && token.expires_at.is_none_or(|expires| expires > now)
                     && token.idle_timeout_ms.is_none_or(|idle| {
-                        token.last_used_ms.unwrap_or(token.created_at_ms) + idle > now
+                        now.saturating_sub(token.last_used.unwrap_or(token.created_at))
+                            .saturating_mul(1000)
+                            < idle
                     });
                 if !valid {
                     return Err(ApiErr::unauthorized());
@@ -271,15 +275,15 @@ async fn authenticate(
                     )?;
                     registry.touch_token(&token.token_id, client_version.as_deref(), now)?;
                 } else if token
-                    .last_used_ms
-                    .is_none_or(|last| now - last > crate::state::CLIENT_WRITE_INTERVAL_MS)
+                    .last_used
+                    .is_none_or(|last| now - last > (crate::state::CLIENT_WRITE_INTERVAL_MS / 1000))
                 {
                     registry.touch_token(&token.token_id, client_version.as_deref(), now)?;
                 }
                 Ok(ApiAuth {
                     account,
                     token,
-                    now_ms: now,
+                    now,
                 })
             })
             .await;

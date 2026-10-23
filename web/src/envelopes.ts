@@ -6,7 +6,7 @@ export type Envelope = {
   v: number
   envelopeId: string
   label: string
-  createdAtMs: number
+  createdAt: number
   lock: { kind: 'passphrase'; cost: { mKib: number; t: number; p: number }; salt: string; generated: boolean }
   nonce: string
   ciphertext: string
@@ -109,11 +109,11 @@ export async function createPassphraseEnvelope(accountId: string, syncKeyHex: st
   const id = b64url(randomBytes(16))
   const key = await kek(passphrase, salt, cost, generated)
   const ciphertext = xchacha20poly1305(key, nonce, aad(accountId, id)).encrypt(secret)
-  return { v: 1, envelopeId: id, label: label.trim(), createdAtMs: Date.now(), lock: { kind: 'passphrase', cost, salt: b64url(salt), generated }, nonce: b64url(nonce), ciphertext: b64url(ciphertext) }
+  return { v: 2, envelopeId: id, label: label.trim(), createdAt: Math.floor(Date.now() / 1000), lock: { kind: 'passphrase', cost, salt: b64url(salt), generated }, nonce: b64url(nonce), ciphertext: b64url(ciphertext) }
 }
 
 export async function openPassphraseEnvelope(accountId: string, envelope: Envelope, passphrase: string) {
-  if (envelope.v !== 1 || envelope.lock.kind !== 'passphrase') throw new Error('This envelope type is not supported by the website yet.')
+  if ((envelope.v !== 1 && envelope.v !== 2) || envelope.lock.kind !== 'passphrase') throw new Error('This envelope type is not supported by the website yet.')
   const key = await kek(passphrase, unb64url(envelope.lock.salt), envelope.lock.cost, envelope.lock.generated)
   const secret = xchacha20poly1305(key, unb64url(envelope.nonce), aad(accountId, envelope.envelopeId)).decrypt(unb64url(envelope.ciphertext))
   if (secret.byteLength !== 32) throw new Error('The decrypted sync key has an invalid length.')

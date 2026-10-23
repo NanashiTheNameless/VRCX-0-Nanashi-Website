@@ -5,7 +5,8 @@ use vrcx_0_nanashi_website_protocol::ids::{AccountId, ChunkId, VaultId};
 
 use super::{DbError, migrate, open_encrypted, remove_files};
 
-const MIGRATIONS: &[&str] = &[r#"
+pub(super) const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE vaults (
     vault_id TEXT PRIMARY KEY,
     vault_pk BLOB NOT NULL,
@@ -40,7 +41,16 @@ CREATE TABLE collections (
     size INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
-"#];
+"#,
+    r#"
+ALTER TABLE vaults RENAME COLUMN created_at_ms TO created_at;
+UPDATE vaults SET created_at = created_at / 1000 - CASE WHEN created_at < 0 AND created_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE envelopes RENAME COLUMN created_at_ms TO created_at;
+UPDATE envelopes SET created_at = created_at / 1000 - CASE WHEN created_at < 0 AND created_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE collections RENAME COLUMN updated_at_ms TO updated_at;
+UPDATE collections SET updated_at = updated_at / 1000 - CASE WHEN updated_at < 0 AND updated_at % 1000 != 0 THEN 1 ELSE 0 END;
+"#,
+];
 
 pub fn account_db_path(data_dir: &Path, account_id: &AccountId) -> PathBuf {
     data_dir
@@ -87,7 +97,7 @@ pub struct VaultRow {
     pub vault_id: VaultId,
     pub vault_pk: Vec<u8>,
     pub manifest_pk: Vec<u8>,
-    pub created_at_ms: i64,
+    pub created_at: i64,
     pub max_seq: u64,
     pub manifest_seq: u64,
     pub usage_bytes: u64,
@@ -188,9 +198,9 @@ impl AccountStore {
     }
 
     pub fn envelopes(&self) -> StoreResult<Vec<(String, String, i64)>> {
-        let mut statement = self.conn.prepare(
-            "SELECT envelope_id, body, created_at_ms FROM envelopes ORDER BY created_at_ms",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT envelope_id, body, created_at FROM envelopes ORDER BY created_at")?;
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -210,7 +220,7 @@ impl AccountStore {
         &mut self,
         envelope_id: &str,
         body: &str,
-        created_at_ms: i64,
+        created_at: i64,
         limits: Limits,
         max_count: i64,
     ) -> StoreResult<()> {
@@ -225,8 +235,8 @@ impl AccountStore {
         }
         Self::check_quota(&tx, limits, body.len() as u64)?;
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO envelopes (envelope_id, body, size, created_at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![envelope_id, body, body.len() as i64, created_at_ms],
+            "INSERT OR IGNORE INTO envelopes (envelope_id, body, size, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![envelope_id, body, body.len() as i64, created_at],
         )?;
         if inserted == 0 {
             return Err(StoreError::Invalid(
@@ -266,7 +276,7 @@ impl AccountStore {
     pub fn collections(&self) -> StoreResult<Vec<String>> {
         let mut statement = self
             .conn
-            .prepare("SELECT body FROM collections ORDER BY updated_at_ms DESC")?;
+            .prepare("SELECT body FROM collections ORDER BY updated_at DESC")?;
         let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -275,7 +285,7 @@ impl AccountStore {
         &mut self,
         code: &str,
         body: &str,
-        updated_at_ms: i64,
+        updated_at: i64,
         limits: Limits,
         max_count: i64,
     ) -> StoreResult<()> {
@@ -299,7 +309,7 @@ impl AccountStore {
         let size = body.len() as i64;
         let adding = size.saturating_sub(old.unwrap_or(0)).max(0) as u64;
         Self::check_quota(&tx, limits, adding)?;
-        tx.execute("INSERT INTO collections (code, body, size, updated_at_ms) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(code) DO UPDATE SET body=excluded.body, size=excluded.size, updated_at_ms=excluded.updated_at_ms", params![code, body, size, updated_at_ms])?;
+        tx.execute("INSERT INTO collections (code, body, size, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(code) DO UPDATE SET body=excluded.body, size=excluded.size, updated_at=excluded.updated_at", params![code, body, size, updated_at])?;
         tx.commit()?;
         Ok(())
     }
@@ -318,7 +328,7 @@ impl AccountStore {
     pub fn export_collections(&self) -> StoreResult<Vec<(String, String, i64, i64)>> {
         let mut statement = self
             .conn
-            .prepare("SELECT code, body, size, updated_at_ms FROM collections")?;
+            .prepare("SELECT code, body, size, updated_at FROM collections")?;
         let rows = statement.query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?;
@@ -327,10 +337,10 @@ impl AccountStore {
 
     pub fn import_collections(&mut self, rows: &[(String, String, i64, i64)]) -> StoreResult<()> {
         let tx = self.conn.transaction()?;
-        for (code, body, size, updated_at_ms) in rows {
+        for (code, body, size, updated_at) in rows {
             tx.execute(
-                "INSERT INTO collections (code, body, size, updated_at_ms) VALUES (?1, ?2, ?3, ?4)",
-                params![code, body, size, updated_at_ms],
+                "INSERT INTO collections (code, body, size, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![code, body, size, updated_at],
             )?;
         }
         tx.commit()?;
@@ -347,7 +357,7 @@ impl AccountStore {
         vault_id: &VaultId,
         vault_pk: &[u8],
         manifest_pk: &[u8],
-        now_ms: i64,
+        now: i64,
         limits: Limits,
     ) -> StoreResult<()> {
         let tx = self
@@ -369,8 +379,8 @@ impl AccountStore {
             return Err(StoreError::VaultLimit);
         }
         tx.execute(
-            "INSERT INTO vaults (vault_id, vault_pk, manifest_pk, created_at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![vault_key(vault_id), vault_pk, manifest_pk, now_ms],
+            "INSERT INTO vaults (vault_id, vault_pk, manifest_pk, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![vault_key(vault_id), vault_pk, manifest_pk, now],
         )?;
         tx.commit()?;
         Ok(())
@@ -378,10 +388,10 @@ impl AccountStore {
 
     pub fn vaults(&self) -> StoreResult<Vec<VaultRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT v.vault_id, v.vault_pk, v.manifest_pk, v.created_at_ms, v.max_seq, v.manifest_seq,
+            "SELECT v.vault_id, v.vault_pk, v.manifest_pk, v.created_at, v.max_seq, v.manifest_seq,
                     COALESCE((SELECT SUM(size) FROM chunks c WHERE c.vault_id = v.vault_id), 0)
                       + COALESCE(length(v.manifest), 0)
-             FROM vaults v ORDER BY v.created_at_ms",
+             FROM vaults v ORDER BY v.created_at",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -396,14 +406,14 @@ impl AccountStore {
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, vault_pk, manifest_pk, created_at_ms, max_seq, manifest_seq, usage) = row?;
+            let (id, vault_pk, manifest_pk, created_at, max_seq, manifest_seq, usage) = row?;
             out.push(VaultRow {
                 vault_id: id
                     .parse()
                     .map_err(|_| StoreError::Invalid("stored vault id"))?,
                 vault_pk,
                 manifest_pk,
-                created_at_ms,
+                created_at,
                 max_seq: max_seq.max(0) as u64,
                 manifest_seq: manifest_seq.max(0) as u64,
                 usage_bytes: usage.max(0) as u64,
@@ -1102,5 +1112,32 @@ mod tests {
             ),
             Err(StoreError::VaultNotFound)
         ));
+    }
+}
+
+#[cfg(test)]
+mod epoch_upgrade_tests {
+    use super::*;
+    #[test]
+    fn upgrades_signed_dates_without_changing_durations_or_rerunning() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate(&mut connection, &MIGRATIONS[..1]).unwrap();
+        connection.execute("INSERT INTO envelopes (envelope_id, body, size, created_at_ms) VALUES ('old', x'01', 1, -1)", []).unwrap();
+        migrate(&mut connection, MIGRATIONS).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT created_at FROM envelopes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            -1
+        );
+        migrate(&mut connection, MIGRATIONS).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM envelopes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }

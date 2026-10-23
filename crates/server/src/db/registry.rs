@@ -6,7 +6,8 @@ use vrcx_0_nanashi_website_protocol::ids::AccountId;
 
 use super::{DbError, DbResult, migrate, open_encrypted};
 
-const MIGRATIONS: &[&str] = &[r#"
+pub(super) const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE accounts (
@@ -137,7 +138,48 @@ CREATE TABLE audit_log (
     at_ms INTEGER NOT NULL
 );
 CREATE INDEX audit_log_target ON audit_log (target_account);
-"#];
+"#,
+    r#"
+ALTER TABLE accounts RENAME COLUMN email_verified_at_ms TO email_verified_at;
+UPDATE accounts SET email_verified_at = email_verified_at / 1000 - CASE WHEN email_verified_at < 0 AND email_verified_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE accounts RENAME COLUMN created_at_ms TO created_at;
+UPDATE accounts SET created_at = created_at / 1000 - CASE WHEN created_at < 0 AND created_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE recovery_codes RENAME COLUMN used_at_ms TO used_at;
+UPDATE recovery_codes SET used_at = used_at / 1000 - CASE WHEN used_at < 0 AND used_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN created_at_ms TO created_at;
+UPDATE tokens SET created_at = created_at / 1000 - CASE WHEN created_at < 0 AND created_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN last_used_ms TO last_used;
+UPDATE tokens SET last_used = last_used / 1000 - CASE WHEN last_used < 0 AND last_used % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN expires_at_ms TO expires_at;
+UPDATE tokens SET expires_at = expires_at / 1000 - CASE WHEN expires_at < 0 AND expires_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN revoked_at_ms TO revoked_at;
+UPDATE tokens SET revoked_at = revoked_at / 1000 - CASE WHEN revoked_at < 0 AND revoked_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN recent_auth_until_ms TO recent_auth_until;
+UPDATE tokens SET recent_auth_until = recent_auth_until / 1000 - CASE WHEN recent_auth_until < 0 AND recent_auth_until % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE tokens RENAME COLUMN recent_totp_until_ms TO recent_totp_until;
+UPDATE tokens SET recent_totp_until = recent_totp_until / 1000 - CASE WHEN recent_totp_until < 0 AND recent_totp_until % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE client_ips RENAME COLUMN first_seen_ms TO first_seen;
+UPDATE client_ips SET first_seen = first_seen / 1000 - CASE WHEN first_seen < 0 AND first_seen % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE client_ips RENAME COLUMN last_seen_ms TO last_seen;
+UPDATE client_ips SET last_seen = last_seen / 1000 - CASE WHEN last_seen < 0 AND last_seen % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE device_pairings RENAME COLUMN expires_at_ms TO expires_at;
+UPDATE device_pairings SET expires_at = expires_at / 1000 - CASE WHEN expires_at < 0 AND expires_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE device_pairings RENAME COLUMN next_poll_ms TO next_poll;
+UPDATE device_pairings SET next_poll = next_poll / 1000 - CASE WHEN next_poll < 0 AND next_poll % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE transfers RENAME COLUMN expires_at_ms TO expires_at;
+UPDATE transfers SET expires_at = expires_at / 1000 - CASE WHEN expires_at < 0 AND expires_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE auth_tokens RENAME COLUMN expires_at_ms TO expires_at;
+UPDATE auth_tokens SET expires_at = expires_at / 1000 - CASE WHEN expires_at < 0 AND expires_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE email_codes RENAME COLUMN expires_at_ms TO expires_at;
+UPDATE email_codes SET expires_at = expires_at / 1000 - CASE WHEN expires_at < 0 AND expires_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE collection_index RENAME COLUMN updated_at_ms TO updated_at;
+UPDATE collection_index SET updated_at = updated_at / 1000 - CASE WHEN updated_at < 0 AND updated_at % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE blob_deletions RENAME COLUMN next_attempt_ms TO next_attempt;
+UPDATE blob_deletions SET next_attempt = next_attempt / 1000 - CASE WHEN next_attempt < 0 AND next_attempt % 1000 != 0 THEN 1 ELSE 0 END;
+ALTER TABLE audit_log RENAME COLUMN at_ms TO at;
+UPDATE audit_log SET at = at / 1000 - CASE WHEN at < 0 AND at % 1000 != 0 THEN 1 ELSE 0 END;
+"#,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountState {
@@ -208,7 +250,7 @@ pub struct AccountRow {
     pub max_vaults: u32,
     pub collector_allowed: bool,
     pub sync_allowed: bool,
-    pub created_at_ms: i64,
+    pub created_at: i64,
     pub wrapped_adk: Option<Vec<u8>>,
     pub usage_bytes: u64,
     pub signup_message: String,
@@ -244,13 +286,13 @@ pub struct TokenRow {
     pub scopes: Vec<Scope>,
     pub label: String,
     pub client_version: Option<String>,
-    pub created_at_ms: i64,
-    pub last_used_ms: Option<i64>,
-    pub expires_at_ms: Option<i64>,
+    pub created_at: i64,
+    pub last_used: Option<i64>,
+    pub expires_at: Option<i64>,
     pub idle_timeout_ms: Option<i64>,
-    pub revoked_at_ms: Option<i64>,
-    pub recent_auth_until_ms: i64,
-    pub recent_totp_until_ms: i64,
+    pub revoked_at: Option<i64>,
+    pub recent_auth_until: i64,
+    pub recent_totp_until: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,8 +302,8 @@ pub struct ClientIpRow {
     pub city: Option<String>,
     pub region: Option<String>,
     pub country: Option<String>,
-    pub first_seen_ms: i64,
-    pub last_seen_ms: i64,
+    pub first_seen: i64,
+    pub last_seen: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -272,8 +314,8 @@ pub struct PairingRow {
     pub approved_scopes: Option<Vec<Scope>>,
     pub account_id: Option<AccountId>,
     pub status: String,
-    pub expires_at_ms: i64,
-    pub next_poll_ms: i64,
+    pub expires_at: i64,
+    pub next_poll: i64,
     pub interval_s: i64,
 }
 
@@ -347,7 +389,7 @@ fn parse_account_id(value: String) -> rusqlite::Result<AccountId> {
 }
 
 const ACCOUNT_COLUMNS: &str = "account_id, email, state, role, quota_bytes, max_vaults, collector_allowed, \
-                               created_at_ms, wrapped_adk, usage_bytes, signup_message, sync_allowed";
+                               created_at, wrapped_adk, usage_bytes, signup_message, sync_allowed";
 
 fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(AccountRow, String)> {
     let state: String = row.get(2)?;
@@ -364,7 +406,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(AccountRow, St
             quota_bytes: row.get::<_, Option<i64>>(4)?.map(|v| v.max(0) as u64),
             max_vaults: row.get::<_, i64>(5)?.max(0) as u32,
             collector_allowed: row.get::<_, i64>(6)? != 0,
-            created_at_ms: row.get(7)?,
+            created_at: row.get(7)?,
             wrapped_adk: row.get(8)?,
             usage_bytes: row.get::<_, i64>(9)?.max(0) as u64,
             signup_message: row.get(10)?,
@@ -375,7 +417,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(AccountRow, St
 }
 
 const TOKEN_COLUMNS: &str = "token_id, account_id, kind, client_kind, secret_hmac, scopes, label, client_version, \
-                             created_at_ms, last_used_ms, expires_at_ms, idle_timeout_ms, revoked_at_ms, recent_auth_until_ms, recent_totp_until_ms";
+                             created_at, last_used, expires_at, idle_timeout_ms, revoked_at, recent_auth_until, recent_totp_until";
 
 fn token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRow> {
     Ok(TokenRow {
@@ -387,13 +429,13 @@ fn token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRow> {
         scopes: scopes_from_string(&row.get::<_, String>(5)?),
         label: row.get(6)?,
         client_version: row.get(7)?,
-        created_at_ms: row.get(8)?,
-        last_used_ms: row.get(9)?,
-        expires_at_ms: row.get(10)?,
+        created_at: row.get(8)?,
+        last_used: row.get(9)?,
+        expires_at: row.get(10)?,
         idle_timeout_ms: row.get(11)?,
-        revoked_at_ms: row.get(12)?,
-        recent_auth_until_ms: row.get(13)?,
-        recent_totp_until_ms: row.get(14)?,
+        revoked_at: row.get(12)?,
+        recent_auth_until: row.get(13)?,
+        recent_totp_until: row.get(14)?,
     })
 }
 
@@ -410,8 +452,8 @@ pub struct NewToken<'a> {
     pub scopes: &'a [Scope],
     pub label: &'a str,
     pub client_version: Option<&'a str>,
-    pub now_ms: i64,
-    pub expires_at_ms: Option<i64>,
+    pub now: i64,
+    pub expires_at: Option<i64>,
     pub idle_timeout_ms: Option<i64>,
 }
 
@@ -450,11 +492,11 @@ impl Registry {
         email: &str,
         state: AccountState,
         quota_bytes: Option<u64>,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO accounts (account_id, email, state, quota_bytes, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![account_id.as_str(), email, state.as_str(), quota_bytes.map(|q| q as i64), now_ms],
+            "INSERT INTO accounts (account_id, email, state, quota_bytes, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![account_id.as_str(), email, state.as_str(), quota_bytes.map(|q| q as i64), now],
         )?;
         Ok(())
     }
@@ -495,7 +537,7 @@ impl Registry {
 
     pub fn list_accounts(&self, state: Option<AccountState>) -> DbResult<Vec<AccountRow>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE (?1 IS NULL OR state = ?1) ORDER BY created_at_ms"
+            "SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE (?1 IS NULL OR state = ?1) ORDER BY created_at"
         ))?;
         let rows = statement.query_map([state.map(AccountState::as_str)], account_from_row)?;
         let mut out = Vec::new();
@@ -534,9 +576,9 @@ impl Registry {
         listed: bool,
         title: &str,
         category: Option<&str>,
-        updated_at_ms: i64,
+        updated_at: i64,
     ) -> DbResult<()> {
-        self.conn.execute("INSERT INTO collection_index (code, account_id, listed, title, category, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(code) DO UPDATE SET account_id=excluded.account_id, listed=excluded.listed, title=excluded.title, category=excluded.category, updated_at_ms=excluded.updated_at_ms", params![code, account_id.as_str(), listed as i64, title, category, updated_at_ms])?;
+        self.conn.execute("INSERT INTO collection_index (code, account_id, listed, title, category, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(code) DO UPDATE SET account_id=excluded.account_id, listed=excluded.listed, title=excluded.title, category=excluded.category, updated_at=excluded.updated_at", params![code, account_id.as_str(), listed as i64, title, category, updated_at])?;
         Ok(())
     }
 
@@ -549,7 +591,7 @@ impl Registry {
     }
 
     pub fn listed_collections(&self) -> DbResult<Vec<CollectionIndexRow>> {
-        let mut statement = self.conn.prepare("SELECT code, account_id, title, category, updated_at_ms FROM collection_index WHERE listed = 1 ORDER BY updated_at_ms DESC LIMIT 1000")?;
+        let mut statement = self.conn.prepare("SELECT code, account_id, title, category, updated_at FROM collection_index WHERE listed = 1 ORDER BY updated_at DESC LIMIT 1000")?;
         let rows = statement.query_map([], |row| {
             let value: String = row.get(1)?;
             let owner = value.parse::<AccountId>().map_err(|e| {
@@ -664,10 +706,10 @@ impl Registry {
         Ok(())
     }
 
-    pub fn set_email_verified(&self, account_id: &AccountId, now_ms: i64) -> DbResult<()> {
+    pub fn set_email_verified(&self, account_id: &AccountId, now: i64) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE accounts SET email_verified_at_ms = COALESCE(email_verified_at_ms, ?2) WHERE account_id = ?1",
-            params![account_id.as_str(), now_ms],
+            "UPDATE accounts SET email_verified_at = COALESCE(email_verified_at, ?2) WHERE account_id = ?1",
+            params![account_id.as_str(), now],
         )?;
         Ok(())
     }
@@ -685,12 +727,12 @@ impl Registry {
         token_hmac: &[u8; 32],
         account_id: &AccountId,
         purpose: &str,
-        expires_at_ms: i64,
+        expires_at: i64,
         data: Option<&str>,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO auth_tokens (token_hmac, account_id, purpose, expires_at_ms, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![token_hmac.as_slice(), account_id.as_str(), purpose, expires_at_ms, data],
+            "INSERT INTO auth_tokens (token_hmac, account_id, purpose, expires_at, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![token_hmac.as_slice(), account_id.as_str(), purpose, expires_at, data],
         )?;
         Ok(())
     }
@@ -699,16 +741,16 @@ impl Registry {
         &self,
         token_hmac: &[u8; 32],
         purpose: &str,
-        now_ms: i64,
+        now: i64,
         max_attempts: i64,
     ) -> DbResult<Option<(AccountId, Option<String>)>> {
         let found: Option<(String, i64, Option<String>)> = self
             .conn
             .query_row(
                 "UPDATE auth_tokens SET attempts = attempts + 1
-                 WHERE token_hmac = ?1 AND purpose = ?2 AND expires_at_ms > ?3
+                 WHERE token_hmac = ?1 AND purpose = ?2 AND expires_at > ?3
                  RETURNING account_id, attempts, data",
-                params![token_hmac.as_slice(), purpose, now_ms],
+                params![token_hmac.as_slice(), purpose, now],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
@@ -737,13 +779,13 @@ impl Registry {
         account_id: &AccountId,
         purpose: &str,
         code_hmac: &[u8; 32],
-        expires_at_ms: i64,
+        expires_at: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO email_codes (account_id, purpose, code_hmac, expires_at_ms) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO email_codes (account_id, purpose, code_hmac, expires_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (account_id, purpose) DO UPDATE
-             SET code_hmac = excluded.code_hmac, expires_at_ms = excluded.expires_at_ms, attempts = 0",
-            params![account_id.as_str(), purpose, code_hmac.as_slice(), expires_at_ms],
+             SET code_hmac = excluded.code_hmac, expires_at = excluded.expires_at, attempts = 0",
+            params![account_id.as_str(), purpose, code_hmac.as_slice(), expires_at],
         )?;
         Ok(())
     }
@@ -753,15 +795,15 @@ impl Registry {
         account_id: &AccountId,
         purpose: &str,
         code_hmac: &[u8; 32],
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<bool> {
         let stored: Option<(Vec<u8>, i64)> = self
             .conn
             .query_row(
                 "UPDATE email_codes SET attempts = attempts + 1
-                 WHERE account_id = ?1 AND purpose = ?2 AND expires_at_ms > ?3
+                 WHERE account_id = ?1 AND purpose = ?2 AND expires_at > ?3
                  RETURNING code_hmac, attempts",
-                params![account_id.as_str(), purpose, now_ms],
+                params![account_id.as_str(), purpose, now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -880,7 +922,7 @@ impl Registry {
 
     pub fn recovery_codes_left(&self, account_id: &AccountId) -> DbResult<i64> {
         Ok(self.conn.query_row(
-            "SELECT count(*) FROM recovery_codes WHERE account_id = ?1 AND used_at_ms IS NULL",
+            "SELECT count(*) FROM recovery_codes WHERE account_id = ?1 AND used_at IS NULL",
             [account_id.as_str()],
             |row| row.get(0),
         )?)
@@ -890,18 +932,18 @@ impl Registry {
         &self,
         account_id: &AccountId,
         code_hmac: &[u8; 32],
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<bool> {
         Ok(self.conn.execute(
-            "UPDATE recovery_codes SET used_at_ms = ?3 WHERE account_id = ?1 AND code_hmac = ?2 AND used_at_ms IS NULL",
-            params![account_id.as_str(), code_hmac.as_slice(), now_ms],
+            "UPDATE recovery_codes SET used_at = ?3 WHERE account_id = ?1 AND code_hmac = ?2 AND used_at IS NULL",
+            params![account_id.as_str(), code_hmac.as_slice(), now],
         )? == 1)
     }
 
     pub fn insert_token(&self, token: &NewToken<'_>) -> DbResult<()> {
         self.conn.execute(
             "INSERT INTO tokens (token_id, account_id, kind, client_kind, secret_hmac, scopes, label, client_version,
-                                 created_at_ms, expires_at_ms, idle_timeout_ms)
+                                 created_at, expires_at, idle_timeout_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 token.token_id,
@@ -912,8 +954,8 @@ impl Registry {
                 scopes_to_string(token.scopes),
                 token.label,
                 token.client_version,
-                token.now_ms,
-                token.expires_at_ms,
+                token.now,
+                token.expires_at,
                 token.idle_timeout_ms,
             ],
         )?;
@@ -933,7 +975,7 @@ impl Registry {
 
     pub fn tokens_for(&self, account_id: &AccountId) -> DbResult<Vec<TokenRow>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {TOKEN_COLUMNS} FROM tokens WHERE account_id = ?1 ORDER BY created_at_ms"
+            "SELECT {TOKEN_COLUMNS} FROM tokens WHERE account_id = ?1 ORDER BY created_at"
         ))?;
         let rows = statement.query_map([account_id.as_str()], token_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -943,27 +985,27 @@ impl Registry {
         &self,
         token_id: &str,
         client_version: Option<&str>,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE tokens SET last_used_ms = ?2, client_version = COALESCE(?3, client_version) WHERE token_id = ?1",
-            params![token_id, now_ms, client_version],
+            "UPDATE tokens SET last_used = ?2, client_version = COALESCE(?3, client_version) WHERE token_id = ?1",
+            params![token_id, now, client_version],
         )?;
         Ok(())
     }
 
-    pub fn set_recent_totp(&self, token_id: &str, until_ms: i64) -> DbResult<()> {
+    pub fn set_recent_totp(&self, token_id: &str, until: i64) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE tokens SET recent_totp_until_ms = ?2, recent_auth_until_ms = ?2 WHERE token_id = ?1",
-            params![token_id, until_ms],
+            "UPDATE tokens SET recent_totp_until = ?2, recent_auth_until = ?2 WHERE token_id = ?1",
+            params![token_id, until],
         )?;
         Ok(())
     }
 
-    pub fn set_recent_auth(&self, token_id: &str, until_ms: i64) -> DbResult<()> {
+    pub fn set_recent_auth(&self, token_id: &str, until: i64) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE tokens SET recent_auth_until_ms = ?2 WHERE token_id = ?1",
-            params![token_id, until_ms],
+            "UPDATE tokens SET recent_auth_until = ?2 WHERE token_id = ?1",
+            params![token_id, until],
         )?;
         Ok(())
     }
@@ -973,12 +1015,12 @@ impl Registry {
         account_id: &AccountId,
         token_id: &str,
         by: &str,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<bool> {
         Ok(self.conn.execute(
-            "UPDATE tokens SET revoked_at_ms = ?3, revoked_by = ?4
-             WHERE account_id = ?1 AND token_id = ?2 AND revoked_at_ms IS NULL",
-            params![account_id.as_str(), token_id, now_ms, by],
+            "UPDATE tokens SET revoked_at = ?3, revoked_by = ?4
+             WHERE account_id = ?1 AND token_id = ?2 AND revoked_at IS NULL",
+            params![account_id.as_str(), token_id, now, by],
         )? == 1)
     }
 
@@ -987,18 +1029,18 @@ impl Registry {
         account_id: &AccountId,
         keep: &str,
         by: &str,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<usize> {
         Ok(self.conn.execute(
-            "UPDATE tokens SET revoked_at_ms = ?3, revoked_by = ?4
-             WHERE account_id = ?1 AND token_id != ?2 AND revoked_at_ms IS NULL",
-            params![account_id.as_str(), keep, now_ms, by],
+            "UPDATE tokens SET revoked_at = ?3, revoked_by = ?4
+             WHERE account_id = ?1 AND token_id != ?2 AND revoked_at IS NULL",
+            params![account_id.as_str(), keep, now, by],
         )?)
     }
 
     pub fn count_live_tokens(&self, account_id: &AccountId) -> DbResult<i64> {
         Ok(self.conn.query_row(
-            "SELECT count(*) FROM tokens WHERE account_id = ?1 AND revoked_at_ms IS NULL",
+            "SELECT count(*) FROM tokens WHERE account_id = ?1 AND revoked_at IS NULL",
             [account_id.as_str()],
             |row| row.get(0),
         )?)
@@ -1013,21 +1055,21 @@ impl Registry {
         city: Option<&str>,
         region: Option<&str>,
         country: Option<&str>,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO client_ips (client_id, account_id, ip, city, region, country, first_seen_ms, last_seen_ms)
+            "INSERT INTO client_ips (client_id, account_id, ip, city, region, country, first_seen, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-             ON CONFLICT (client_id, ip) DO UPDATE SET last_seen_ms = excluded.last_seen_ms",
-            params![client_id, account_id.as_str(), ip, city, region, country, now_ms],
+             ON CONFLICT (client_id, ip) DO UPDATE SET last_seen = excluded.last_seen",
+            params![client_id, account_id.as_str(), ip, city, region, country, now],
         )?;
         Ok(())
     }
 
     pub fn client_ips(&self, account_id: &AccountId) -> DbResult<Vec<ClientIpRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT client_id, ip, city, region, country, first_seen_ms, last_seen_ms
-             FROM client_ips WHERE account_id = ?1 ORDER BY last_seen_ms DESC",
+            "SELECT client_id, ip, city, region, country, first_seen, last_seen
+             FROM client_ips WHERE account_id = ?1 ORDER BY last_seen DESC",
         )?;
         let rows = statement.query_map([account_id.as_str()], |row| {
             Ok(ClientIpRow {
@@ -1036,8 +1078,8 @@ impl Registry {
                 city: row.get(2)?,
                 region: row.get(3)?,
                 country: row.get(4)?,
-                first_seen_ms: row.get(5)?,
-                last_seen_ms: row.get(6)?,
+                first_seen: row.get(5)?,
+                last_seen: row.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1054,11 +1096,10 @@ impl Registry {
         )?)
     }
 
-    pub fn prune_client_ips(&self, older_than_ms: i64) -> DbResult<usize> {
-        Ok(self.conn.execute(
-            "DELETE FROM client_ips WHERE last_seen_ms < ?1",
-            [older_than_ms],
-        )?)
+    pub fn prune_client_ips(&self, older_than: i64) -> DbResult<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM client_ips WHERE last_seen < ?1", [older_than])?)
     }
 
     pub fn insert_pairing(
@@ -1067,12 +1108,12 @@ impl Registry {
         user_code: &str,
         device_label: &str,
         requested_scopes: &[Scope],
-        expires_at_ms: i64,
+        expires_at: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO device_pairings (device_code_hmac, user_code, device_label, requested_scopes, status, expires_at_ms)
+            "INSERT INTO device_pairings (device_code_hmac, user_code, device_label, requested_scopes, status, expires_at)
              VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-            params![device_code_hmac, user_code, device_label, scopes_to_string(requested_scopes), expires_at_ms],
+            params![device_code_hmac, user_code, device_label, scopes_to_string(requested_scopes), expires_at],
         )?;
         Ok(())
     }
@@ -1087,7 +1128,7 @@ impl Registry {
             .query_row(
                 &format!(
                     "SELECT user_code, device_label, requested_scopes, approved_scopes, account_id, status,
-                            expires_at_ms, next_poll_ms, interval_s
+                            expires_at, next_poll, interval_s
                      FROM device_pairings WHERE {clause} = ?1"
                 ),
                 [value],
@@ -1099,8 +1140,8 @@ impl Registry {
                         approved_scopes: row.get::<_, Option<String>>(3)?.map(|s| scopes_from_string(&s)),
                         account_id: row.get::<_, Option<String>>(4)?.map(parse_account_id).transpose()?,
                         status: row.get(5)?,
-                        expires_at_ms: row.get(6)?,
-                        next_poll_ms: row.get(7)?,
+                        expires_at: row.get(6)?,
+                        next_poll: row.get(7)?,
                         interval_s: row.get(8)?,
                     })
                 },
@@ -1136,12 +1177,12 @@ impl Registry {
     pub fn set_pairing_poll(
         &self,
         device_code_hmac: &[u8],
-        next_poll_ms: i64,
+        next_poll: i64,
         interval_s: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE device_pairings SET next_poll_ms = ?2, interval_s = ?3 WHERE device_code_hmac = ?1",
-            params![device_code_hmac, next_poll_ms, interval_s],
+            "UPDATE device_pairings SET next_poll = ?2, interval_s = ?3 WHERE device_code_hmac = ?1",
+            params![device_code_hmac, next_poll, interval_s],
         )?;
         Ok(())
     }
@@ -1159,11 +1200,11 @@ impl Registry {
         transfer_id: &str,
         account_id: &AccountId,
         epk: &[u8],
-        expires_at_ms: i64,
+        expires_at: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO transfers (transfer_id, account_id, epk, expires_at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![transfer_id, account_id.as_str(), epk, expires_at_ms],
+            "INSERT INTO transfers (transfer_id, account_id, epk, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![transfer_id, account_id.as_str(), epk, expires_at],
         )?;
         Ok(())
     }
@@ -1172,13 +1213,13 @@ impl Registry {
         &self,
         transfer_id: &str,
         account_id: &AccountId,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<Option<TransferRow>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT epk, sealed FROM transfers WHERE transfer_id = ?1 AND account_id = ?2 AND expires_at_ms > ?3",
-                params![transfer_id, account_id.as_str(), now_ms],
+                "SELECT epk, sealed FROM transfers WHERE transfer_id = ?1 AND account_id = ?2 AND expires_at > ?3",
+                params![transfer_id, account_id.as_str(), now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?)
@@ -1189,12 +1230,12 @@ impl Registry {
         transfer_id: &str,
         account_id: &AccountId,
         sealed: &[u8],
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<bool> {
         Ok(self.conn.execute(
             "UPDATE transfers SET sealed = ?3
-             WHERE transfer_id = ?1 AND account_id = ?2 AND sealed IS NULL AND expires_at_ms > ?4",
-            params![transfer_id, account_id.as_str(), sealed, now_ms],
+             WHERE transfer_id = ?1 AND account_id = ?2 AND sealed IS NULL AND expires_at > ?4",
+            params![transfer_id, account_id.as_str(), sealed, now],
         )? == 1)
     }
 
@@ -1206,21 +1247,15 @@ impl Registry {
         Ok(())
     }
 
-    pub fn prune_expired(&self, now_ms: i64) -> DbResult<()> {
+    pub fn prune_expired(&self, now: i64) -> DbResult<()> {
         self.conn
-            .execute("DELETE FROM transfers WHERE expires_at_ms <= ?1", [now_ms])?;
-        self.conn.execute(
-            "DELETE FROM device_pairings WHERE expires_at_ms <= ?1",
-            [now_ms],
-        )?;
-        self.conn.execute(
-            "DELETE FROM email_codes WHERE expires_at_ms <= ?1",
-            [now_ms],
-        )?;
-        self.conn.execute(
-            "DELETE FROM auth_tokens WHERE expires_at_ms <= ?1",
-            [now_ms],
-        )?;
+            .execute("DELETE FROM transfers WHERE expires_at <= ?1", [now])?;
+        self.conn
+            .execute("DELETE FROM device_pairings WHERE expires_at <= ?1", [now])?;
+        self.conn
+            .execute("DELETE FROM email_codes WHERE expires_at <= ?1", [now])?;
+        self.conn
+            .execute("DELETE FROM auth_tokens WHERE expires_at <= ?1", [now])?;
         Ok(())
     }
 
@@ -1229,7 +1264,7 @@ impl Registry {
         for (kind, target) in items {
             tx.execute(
                 "INSERT INTO blob_deletions (target, kind) VALUES (?1, ?2)
-                 ON CONFLICT (target) DO UPDATE SET next_attempt_ms = 0",
+                 ON CONFLICT (target) DO UPDATE SET next_attempt = 0",
                 params![target, kind.as_str()],
             )?;
         }
@@ -1239,14 +1274,14 @@ impl Registry {
 
     pub fn due_deletions(
         &self,
-        now_ms: i64,
+        now: i64,
         limit: u32,
     ) -> DbResult<Vec<(DeletionKind, String, i64)>> {
         let mut statement = self.conn.prepare(
-            "SELECT kind, target, attempts FROM blob_deletions WHERE next_attempt_ms <= ?1
-             ORDER BY kind DESC, next_attempt_ms LIMIT ?2",
+            "SELECT kind, target, attempts FROM blob_deletions WHERE next_attempt <= ?1
+             ORDER BY kind DESC, next_attempt LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![now_ms, i64::from(limit)], |row| {
+        let rows = statement.query_map(params![now, i64::from(limit)], |row| {
             let kind: String = row.get(0)?;
             Ok((
                 if kind == "prefix" {
@@ -1267,10 +1302,10 @@ impl Registry {
         Ok(())
     }
 
-    pub fn retry_deletion(&self, target: &str, next_attempt_ms: i64) -> DbResult<()> {
+    pub fn retry_deletion(&self, target: &str, next_attempt: i64) -> DbResult<()> {
         self.conn.execute(
-            "UPDATE blob_deletions SET attempts = attempts + 1, next_attempt_ms = ?2 WHERE target = ?1",
-            params![target, next_attempt_ms],
+            "UPDATE blob_deletions SET attempts = attempts + 1, next_attempt = ?2 WHERE target = ?1",
+            params![target, next_attempt],
         )?;
         Ok(())
     }
@@ -1286,18 +1321,18 @@ impl Registry {
         actor: &str,
         action: &str,
         target: Option<&AccountId>,
-        now_ms: i64,
+        now: i64,
     ) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO audit_log (actor, action, target_account, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![actor, action, target.map(AccountId::as_str), now_ms],
+            "INSERT INTO audit_log (actor, action, target_account, at) VALUES (?1, ?2, ?3, ?4)",
+            params![actor, action, target.map(AccountId::as_str), now],
         )?;
         Ok(())
     }
 
     pub fn audit_entries(&self, target: Option<&AccountId>) -> DbResult<Vec<AuditRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT actor, action, target_account, at_ms FROM audit_log
+            "SELECT actor, action, target_account, at FROM audit_log
              WHERE (?1 IS NULL OR target_account = ?1) ORDER BY id DESC LIMIT 500",
         )?;
         let rows = statement.query_map([target.map(AccountId::as_str)], |row| {
@@ -1385,8 +1420,8 @@ mod tests {
                     scopes: &[Scope::Sync, Scope::Account],
                     label: "PC",
                     client_version: None,
-                    now_ms: 1,
-                    expires_at_ms: None,
+                    now: 1,
+                    expires_at: None,
                     idle_timeout_ms: None,
                 })
                 .unwrap();
@@ -1435,8 +1470,8 @@ mod tests {
             .unwrap();
         let rows = registry.client_ips(&id).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[1].first_seen_ms, 100);
-        assert_eq!(rows[1].last_seen_ms, 200);
+        assert_eq!(rows[1].first_seen, 100);
+        assert_eq!(rows[1].last_seen, 200);
         assert_eq!(registry.prune_client_ips(250).unwrap(), 1);
         assert_eq!(registry.clear_client_ips(&id, Some("t1")).unwrap(), 1);
     }
@@ -1501,5 +1536,41 @@ mod tests {
             b"sealed"
         );
         assert!(registry.transfer("ABCDEFGH", &id, 1000).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod epoch_upgrade_tests {
+    use super::*;
+    #[test]
+    fn upgrades_signed_dates_without_changing_durations_or_rerunning() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate(&mut connection, &MIGRATIONS[..1]).unwrap();
+        connection.execute("INSERT INTO accounts (account_id, email, state, created_at_ms) VALUES ('old', 'old@example.test', 'active', 1784629815250)", []).unwrap();
+        connection.execute("INSERT INTO tokens (token_id, account_id, kind, client_kind, secret_hmac, scopes, label, created_at_ms, idle_timeout_ms) VALUES ('token', 'old', 'session', 'desktop', x'01', '', '', -1, 43200000)", []).unwrap();
+        migrate(&mut connection, MIGRATIONS).unwrap();
+        let row: (i64, i64) = connection
+            .query_row(
+                "SELECT created_at, idle_timeout_ms FROM tokens",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (-1, 43200000));
+        assert_eq!(
+            connection
+                .query_row("SELECT created_at FROM accounts", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1784629815
+        );
+        migrate(&mut connection, MIGRATIONS).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT created_at FROM accounts", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1784629815
+        );
     }
 }

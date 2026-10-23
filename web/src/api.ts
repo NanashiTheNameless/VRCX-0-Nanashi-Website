@@ -27,7 +27,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   const token = getToken()
   if (token) headers.set('authorization', `Bearer ${token}`)
-  return fetch(`${config.apiOrigin}/web/v1${path}`, { ...init, headers })
+  return fetch(`${config.apiOrigin}/web/v2${path}`, { ...init, headers })
 }
 
 export async function apiOriginFetch(path: string, init: RequestInit = {}) {
@@ -52,7 +52,7 @@ export async function requestBinary(path: string) {
 
 export async function publicGet<T>(path: string): Promise<T> {
   const config = await configPromise
-  const response = await fetch(`${config.apiOrigin}/public/v1${path}`)
+  const response = await fetch(`${config.apiOrigin}/public/v2${path}`)
   if (!response.ok) throw new ApiError(response.status === 404 ? 'This page was not found.' : `Could not load page (${response.status})`, response.status)
   return await response.json() as T
 }

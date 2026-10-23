@@ -1,0 +1,35 @@
+[
+  {
+    "legacy": {
+      "created_at": "2026-07-21T10:30:15.125Z",
+      "event": "same"
+    },
+    "imported": {
+      "created_at": 1784629815,
+      "event": "same",
+      "event_discriminator": "cb18c958ffde1688939a5de745816b37d493af4c4cdb1972c4e5f75fe5842e00"
+    }
+  },
+  {
+    "legacy": {
+      "created_at": "2026-07-21T10:30:15.875Z",
+      "event": "same"
+    },
+    "imported": {
+      "created_at": 1784629815,
+      "event": "same",
+      "event_discriminator": "6582f4682306c7aa25f63efe8d8cb5281f8d87ea3bd7c0118f98d5af4697cd20"
+    }
+  },
+  {
+    "legacy": {
+      "created_at": "2026-07-21T10:30:15.000Z",
+      "event": "same"
+    },
+    "imported": {
+      "created_at": 1784629815,
+      "event": "same",
+      "event_discriminator": ""
+    }
+  }
+]

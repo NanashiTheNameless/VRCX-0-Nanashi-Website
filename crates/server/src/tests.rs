@@ -19,7 +19,7 @@ use crate::db::registry::{AccountState, Registry};
 use crate::routes::api_router;
 use crate::routes::v1::issue_api_token;
 use crate::state::{AppState, Shared};
-use crate::util::now_ms;
+use crate::util::now_epoch;
 
 struct Harness {
     _dir: tempfile::TempDir,
@@ -98,7 +98,7 @@ impl Harness {
                 &format!("{}@example.com", id.as_str()),
                 AccountState::Active,
                 quota,
-                now_ms(),
+                now_epoch(),
             )
             .unwrap();
         id
@@ -159,7 +159,7 @@ impl Harness {
     }
 
     async fn post_json(&self, path: &str, token: Option<&str>, body: Value) -> Reply {
-        let body = if matches!(path, "/web/v1/auth/signup" | "/web/v1/auth/login") {
+        let body = if matches!(path, "/web/v2/auth/signup" | "/web/v2/auth/login") {
             let mut body = body;
             if let Some(fields) = body.as_object_mut() {
                 fields.insert("altcha".into(), json!(self.auth_altcha().await));
@@ -180,7 +180,7 @@ impl Harness {
 
     async fn auth_altcha(&self) -> String {
         let challenge: altcha::Challenge =
-            serde_json::from_value(self.get("/web/v1/auth/altcha/challenge", None).await.json())
+            serde_json::from_value(self.get("/web/v2/auth/altcha/challenge", None).await.json())
                 .unwrap();
         let solution = altcha::solve_challenge(altcha::SolveChallengeOptions::new(&challenge))
             .unwrap()
@@ -198,7 +198,7 @@ const ALL: &[Scope] = &[Scope::Sync, Scope::Collector, Scope::Share, Scope::Acco
 #[tokio::test]
 async fn capabilities_are_public() {
     let h = Harness::new(None);
-    let reply = h.get("/v1/capabilities", None).await;
+    let reply = h.get("/v2/capabilities", None).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.json()["server"], api::SERVER_NAME);
     assert_eq!(
@@ -216,7 +216,7 @@ async fn bad_tokens_are_rejected() {
         Some("garbage"),
         Some("rs1_aaaaaaaaaaaaaaaa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
     ] {
-        let reply = h.get("/v1/account", token).await;
+        let reply = h.get("/v2/account", token).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
         assert_eq!(reply.code(), "unauthorized");
     }
@@ -226,11 +226,11 @@ async fn bad_tokens_are_rejected() {
     tampered.pop();
     tampered.push(if token.ends_with('A') { 'B' } else { 'A' });
     assert_eq!(
-        h.get("/v1/account", Some(&tampered)).await.status,
+        h.get("/v2/account", Some(&tampered)).await.status,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        h.get("/v1/account", Some(&token)).await.status,
+        h.get("/v2/account", Some(&token)).await.status,
         StatusCode::OK
     );
     h.state
@@ -238,7 +238,7 @@ async fn bad_tokens_are_rejected() {
         .set_state(&account, AccountState::Suspended)
         .unwrap();
     assert_eq!(
-        h.get("/v1/account", Some(&token)).await.status,
+        h.get("/v2/account", Some(&token)).await.status,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -250,14 +250,14 @@ async fn scopes_are_enforced() {
     let token = h.token(&account, &[Scope::Sync]);
     let reply = h
         .post_json(
-            "/v1/vaults",
+            "/v2/vaults",
             Some(&token),
             json!({"vaultId": VaultId::random().unwrap(), "vaultPk": "", "manifestPk": ""}),
         )
         .await;
     assert_eq!(reply.code(), "forbidden_scope");
     assert_eq!(
-        h.get("/v1/account/clients", Some(&token)).await.code(),
+        h.get("/v2/account/clients", Some(&token)).await.code(),
         "forbidden_scope"
     );
 }
@@ -268,7 +268,7 @@ async fn device_pairing_flow() {
     let account = h.account(None);
     let reply = h
         .post_json(
-            "/v1/device/authorize",
+            "/v2/device/authorize",
             None,
             json!({"deviceLabel": "Gaming PC", "requestedScopes": ["sync", "collector"]}),
         )
@@ -281,7 +281,7 @@ async fn device_pairing_flow() {
         "https://vrcx.namelessnanashi.dev/pair"
     );
 
-    let poll = || h.post_json("/v1/device/token", None, json!({"deviceCode": device_code}));
+    let poll = || h.post_json("/v2/device/token", None, json!({"deviceCode": device_code}));
     assert_eq!(poll().await.code(), "authorization_pending");
     assert_eq!(poll().await.code(), "slow_down");
 
@@ -296,7 +296,7 @@ async fn device_pairing_flow() {
     assert_eq!(reply.json()["scopes"], json!(["sync"]));
     let token = reply.json()["token"].as_str().unwrap().to_owned();
     assert_eq!(
-        h.get("/v1/account", Some(&token)).await.status,
+        h.get("/v2/account", Some(&token)).await.status,
         StatusCode::OK
     );
     assert_eq!(poll().await.code(), "expired_token");
@@ -314,7 +314,7 @@ async fn full_sync_round_trip_with_real_crypto() {
     let public = keys.public();
     let reply = h
         .post_json(
-            "/v1/vaults",
+            "/v2/vaults",
             Some(&token),
             json!({"vaultId": vault_id, "vaultPk": b64::encode(public.vault_pk.as_bytes()),
                    "manifestPk": b64::encode(public.manifest_pk.as_bytes())}),
@@ -331,7 +331,7 @@ async fn full_sync_round_trip_with_real_crypto() {
         0,
     ));
     let sealed_manifest = manifest::seal_manifest(&manifest, &keys).unwrap();
-    let path = format!("/v1/vaults/{vault_id}/manifest");
+    let path = format!("/v2/vaults/{vault_id}/manifest");
     let reply = h
         .call(
             Method::PUT,
@@ -363,14 +363,14 @@ async fn full_sync_round_trip_with_real_crypto() {
         source_id: SourceId::random().unwrap(),
         source_seq: 1,
         kind: ChunkKind::Rows,
-        created_at_ms: now_ms(),
+        created_at: now_epoch(),
         app_version: "test".into(),
         coverage: vec![],
         dropped_rows: 0,
         body: body.clone(),
     };
     let sealed = chunk::seal_chunk(&draft, &device, &public.vault_pk).unwrap();
-    let chunk_path = format!("/v1/vaults/{vault_id}/chunks");
+    let chunk_path = format!("/v2/vaults/{vault_id}/chunks");
     let chunk_id = sealed.chunk_id.to_string();
     let chunk_headers = [("x-chunk-id", chunk_id.as_str())];
     let reply = h
@@ -404,7 +404,7 @@ async fn full_sync_round_trip_with_real_crypto() {
     let pulled_manifest = manifest::open_manifest(&reply.body, seq, &keys, None).unwrap();
     let reply = h
         .get(
-            &format!("/v1/vaults/{vault_id}/chunks:batch?after=0"),
+            &format!("/v2/vaults/{vault_id}/chunks:batch?after=0"),
             Some(&token),
         )
         .await;
@@ -431,7 +431,7 @@ async fn full_sync_round_trip_with_real_crypto() {
         sealed.blob
     );
 
-    let info = h.get("/v1/account", Some(&token)).await.json();
+    let info = h.get("/v2/account", Some(&token)).await.json();
     assert!(info["usageBytes"].as_u64().unwrap() > sealed.blob.len() as u64);
 
     let raw = std::fs::read(crate::db::account::account_db_path(
@@ -451,12 +451,12 @@ async fn quota_limits_uploads() {
     let vault_id = VaultId::random().unwrap();
     let keys = VaultKeys::derive(&SyncSecret::generate().unwrap(), vault_id).public();
     h.post_json(
-        "/v1/vaults",
+        "/v2/vaults",
         Some(&token),
         json!({"vaultId": vault_id, "vaultPk": b64::encode(keys.vault_pk.as_bytes()), "manifestPk": b64::encode(keys.manifest_pk.as_bytes())}),
     )
     .await;
-    let path = format!("/v1/vaults/{vault_id}/chunks");
+    let path = format!("/v2/vaults/{vault_id}/chunks");
     let first = vrcx_0_nanashi_website_protocol::ids::ChunkId::random()
         .unwrap()
         .to_string();
@@ -497,7 +497,7 @@ async fn key_transfer_through_the_server() {
     let ephemeral = SealPrivateKey::generate();
     let reply = h
         .post_json(
-            "/v1/transfer",
+            "/v2/transfer",
             Some(&new_device),
             json!({"epk": b64::encode(ephemeral.public().as_bytes())}),
         )
@@ -505,7 +505,7 @@ async fn key_transfer_through_the_server() {
     assert_eq!(reply.status, StatusCode::CREATED);
     let transfer_id = reply.json()["transferId"].as_str().unwrap().to_owned();
     let code = transfer::display_code(&transfer_id, &ephemeral.public()).unwrap();
-    let result_path = format!("/v1/transfer/{transfer_id}/result");
+    let result_path = format!("/v2/transfer/{transfer_id}/result");
     assert_eq!(
         h.get(&result_path, Some(&new_device)).await.code(),
         "authorization_pending"
@@ -513,7 +513,7 @@ async fn key_transfer_through_the_server() {
 
     let (id, fingerprint) = transfer::parse_code(&code).unwrap();
     let epk = h
-        .get(&format!("/v1/transfer/{id}"), Some(&old_device))
+        .get(&format!("/v2/transfer/{id}"), Some(&old_device))
         .await
         .json()["epk"]
         .as_str()
@@ -527,7 +527,7 @@ async fn key_transfer_through_the_server() {
     let reply = h
         .call(
             Method::PUT,
-            &format!("/v1/transfer/{id}"),
+            &format!("/v2/transfer/{id}"),
             Some(&old_device),
             &[],
             Body::from(sealed),
@@ -550,14 +550,14 @@ async fn key_transfer_through_the_server() {
     let stranger = h.token(&other_account, &[Scope::Sync]);
     let reply = h
         .post_json(
-            "/v1/transfer",
+            "/v2/transfer",
             Some(&new_device),
             json!({"epk": b64::encode(ephemeral.public().as_bytes())}),
         )
         .await;
     let fresh = reply.json()["transferId"].as_str().unwrap().to_owned();
     assert_eq!(
-        h.get(&format!("/v1/transfer/{fresh}"), Some(&stranger))
+        h.get(&format!("/v2/transfer/{fresh}"), Some(&stranger))
             .await
             .code(),
         "transfer_not_found"
@@ -576,11 +576,11 @@ async fn connected_clients_and_revocation() {
         ("cf-ipcountry", "FR"),
         ("x-rs-client", "VRCX-0-Nanashi/1.0 (Windows 11; x86_64)"),
     ];
-    h.call(Method::GET, "/v1/account", Some(&other), &cf, Body::empty())
+    h.call(Method::GET, "/v2/account", Some(&other), &cf, Body::empty())
         .await;
     h.call(
         Method::GET,
-        "/v1/account",
+        "/v2/account",
         Some(&main),
         &[("cf-connecting-ip", "198.51.100.1")],
         Body::empty(),
@@ -588,7 +588,7 @@ async fn connected_clients_and_revocation() {
     .await;
 
     let clients = h
-        .get("/v1/account/clients?history=true", Some(&main))
+        .get("/v2/account/clients?history=true", Some(&main))
         .await
         .json();
     let clients = clients.as_array().unwrap();
@@ -603,7 +603,7 @@ async fn connected_clients_and_revocation() {
     assert_eq!(other_row["activeNow"], true);
     let other_id = other_row["clientId"].as_str().unwrap().to_owned();
 
-    let revoke = format!("/v1/account/clients/{other_id}/revoke");
+    let revoke = format!("/v2/account/clients/{other_id}/revoke");
     assert_eq!(
         h.post_json(&revoke, Some(&main), json!({})).await.code(),
         "reauth_required"
@@ -612,7 +612,7 @@ async fn connected_clients_and_revocation() {
     let totp_secret = b"0123456789abcdefghij";
     let wrapped = h.state.keys.wrap(&format!("totp:{account}"), totp_secret);
     h.state.registry().set_totp(&account, &wrapped).unwrap();
-    let step = now_ms() / 1000 / 30;
+    let step = now_epoch() / 30;
     let code = {
         use hmac::{Hmac, KeyInit, Mac};
         let mut mac = Hmac::<sha1::Sha1>::new_from_slice(totp_secret).unwrap();
@@ -624,7 +624,7 @@ async fn connected_clients_and_revocation() {
     };
     assert_eq!(
         h.post_json(
-            "/v1/account/reauth",
+            "/v2/account/reauth",
             Some(&main),
             json!({"method": "totp", "code": "000000"})
         )
@@ -634,7 +634,7 @@ async fn connected_clients_and_revocation() {
     );
     assert_eq!(
         h.post_json(
-            "/v1/account/reauth",
+            "/v2/account/reauth",
             Some(&main),
             json!({"method": "totp", "code": code})
         )
@@ -644,7 +644,7 @@ async fn connected_clients_and_revocation() {
     );
     assert_eq!(
         h.post_json(
-            "/v1/account/reauth",
+            "/v2/account/reauth",
             Some(&main),
             json!({"method": "totp", "code": code})
         )
@@ -658,7 +658,7 @@ async fn connected_clients_and_revocation() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        h.get("/v1/account", Some(&other)).await.status,
+        h.get("/v2/account", Some(&other)).await.status,
         StatusCode::UNAUTHORIZED,
         "revocation is immediate"
     );
@@ -666,7 +666,7 @@ async fn connected_clients_and_revocation() {
     let reply = h
         .call(
             Method::DELETE,
-            "/v1/account/clients/history",
+            "/v2/account/clients/history",
             Some(&main),
             &[],
             Body::empty(),
@@ -674,7 +674,7 @@ async fn connected_clients_and_revocation() {
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let clients = h
-        .get("/v1/account/clients?history=true", Some(&main))
+        .get("/v2/account/clients?history=true", Some(&main))
         .await
         .json();
     assert!(
@@ -703,7 +703,7 @@ async fn recovery_codes_are_single_use_for_reauth() {
     let written_down = plain[3].to_ascii_uppercase().replace('-', " ");
     let reauth = |code: String| {
         h.post_json(
-            "/v1/account/reauth",
+            "/v2/account/reauth",
             Some(&token),
             json!({"method": "recovery", "code": code}),
         )
@@ -743,14 +743,14 @@ async fn owners_respect_configured_usage_limits() {
         .set_role(&account, crate::db::registry::Role::Owner)
         .unwrap();
     let token = h.token(&account, ALL);
-    let info = h.get("/v1/account", Some(&token)).await.json();
+    let info = h.get("/v2/account", Some(&token)).await.json();
     assert_eq!(info["quotaBytes"], 100);
     assert_eq!(info["collectorAllowed"], false);
     for index in 0..2 {
         let vault_id = VaultId::random().unwrap();
         let keys = VaultKeys::derive(&SyncSecret::generate().unwrap(), vault_id).public();
         let body = json!({"vaultId": vault_id, "vaultPk": b64::encode(keys.vault_pk.as_bytes()), "manifestPk": b64::encode(keys.manifest_pk.as_bytes())});
-        let created = h.post_json("/v1/vaults", Some(&token), body).await;
+        let created = h.post_json("/v2/vaults", Some(&token), body).await;
         assert_eq!(
             created.status,
             if index == 0 {
@@ -762,7 +762,7 @@ async fn owners_respect_configured_usage_limits() {
         if index != 0 {
             continue;
         }
-        let path = format!("/v1/vaults/{vault_id}/chunks");
+        let path = format!("/v2/vaults/{vault_id}/chunks");
         let chunk_id = vrcx_0_nanashi_website_protocol::ids::ChunkId::random()
             .unwrap()
             .to_string();
@@ -792,7 +792,7 @@ async fn forbidding_sync_purges_data_and_blocks_sync() {
     let keys = VaultKeys::derive(&SyncSecret::generate().unwrap(), vault_id).public();
     let body = json!({"vaultId": vault_id, "vaultPk": b64::encode(keys.vault_pk.as_bytes()), "manifestPk": b64::encode(keys.manifest_pk.as_bytes())});
     assert_eq!(
-        h.post_json("/v1/vaults", Some(&token), body.clone())
+        h.post_json("/v2/vaults", Some(&token), body.clone())
             .await
             .status,
         StatusCode::CREATED
@@ -802,7 +802,7 @@ async fn forbidding_sync_purges_data_and_blocks_sync() {
         let store = h.state.open_store(&row).unwrap();
         store
             .conn_for_tests()
-            .execute("INSERT INTO collections (code, body, size, updated_at_ms) VALUES ('AbC12345', '{}', 2, 1)", [])
+            .execute("INSERT INTO collections (code, body, size, updated_at) VALUES ('AbC12345', '{}', 2, 1)", [])
             .unwrap();
     }
     let old_key = h
@@ -816,22 +816,22 @@ async fn forbidding_sync_purges_data_and_blocks_sync() {
 
     h.state.forbid_sync(&account, "test").unwrap();
 
-    let reply = h.get("/v1/vaults", Some(&token)).await;
+    let reply = h.get("/v2/vaults", Some(&token)).await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
     assert_eq!(reply.code(), "sync_disabled");
     assert_eq!(
-        h.post_json("/v1/vaults", Some(&token), body.clone())
+        h.post_json("/v2/vaults", Some(&token), body.clone())
             .await
             .code(),
         "sync_disabled"
     );
     assert_eq!(
-        h.post_json("/v1/transfer", Some(&token), json!({"epk": "x"}))
+        h.post_json("/v2/transfer", Some(&token), json!({"epk": "x"}))
             .await
             .code(),
         "sync_disabled"
     );
-    let info = h.get("/v1/account", Some(&token)).await.json();
+    let info = h.get("/v2/account", Some(&token)).await.json();
     assert_eq!(info["syncAllowed"], false);
     assert_eq!(info["collectorAllowed"], false);
 
@@ -850,7 +850,7 @@ async fn forbidding_sync_purges_data_and_blocks_sync() {
     );
 
     h.state.allow_sync(&account, "test").unwrap();
-    assert_eq!(h.get("/v1/vaults", Some(&token)).await.json(), json!([]));
+    assert_eq!(h.get("/v2/vaults", Some(&token)).await.json(), json!([]));
 }
 
 async fn make_vault(h: &Harness, token: &str) -> VaultId {
@@ -860,9 +860,9 @@ async fn make_vault(h: &Harness, token: &str) -> VaultId {
     assert_eq!(
         h.post_json(
             if token.starts_with("rsw1_") {
-                "/web/v1/vaults"
+                "/web/v2/vaults"
             } else {
-                "/v1/vaults"
+                "/v2/vaults"
             },
             Some(token),
             body,
@@ -879,9 +879,9 @@ async fn upload(h: &Harness, token: &str, vault_id: &VaultId, fill: u8) -> (Stri
         .unwrap()
         .to_string();
     let prefix = if token.starts_with("rsw1_") {
-        "/web/v1"
+        "/web/v2"
     } else {
-        "/v1"
+        "/v2"
     };
     let path = format!("{prefix}/vaults/{vault_id}/chunks");
     let reply = h
@@ -910,7 +910,7 @@ async fn objects_follow_chunks_through_compaction_and_vault_deletion() {
     assert_eq!(h.state.objects.memory_keys().len(), 4);
 
     let single = h
-        .get(&format!("/v1/vaults/{vault_id}/chunks/2"), Some(&token))
+        .get(&format!("/v2/vaults/{vault_id}/chunks/2"), Some(&token))
         .await;
     assert_eq!(
         single.body,
@@ -920,7 +920,7 @@ async fn objects_follow_chunks_through_compaction_and_vault_deletion() {
 
     let reply = h
         .post_json(
-            &format!("/v1/vaults/{vault_id}/compact"),
+            &format!("/v2/vaults/{vault_id}/compact"),
             Some(&token),
             json!({"replacesUpToSeq": 3, "chunkIds": [newest]}),
         )
@@ -930,7 +930,7 @@ async fn objects_follow_chunks_through_compaction_and_vault_deletion() {
     assert_eq!(h.state.objects.memory_keys().len(), 1);
     let batch = h
         .get(
-            &format!("/v1/vaults/{vault_id}/chunks:batch?after=0"),
+            &format!("/v2/vaults/{vault_id}/chunks:batch?after=0"),
             Some(&token),
         )
         .await;
@@ -941,7 +941,7 @@ async fn objects_follow_chunks_through_compaction_and_vault_deletion() {
     let reply = h
         .call(
             Method::DELETE,
-            &format!("/v1/vaults/{vault_id}"),
+            &format!("/v2/vaults/{vault_id}"),
             Some(&token),
             &[],
             Body::empty(),
@@ -962,12 +962,12 @@ async fn replacing_chunks_drops_their_objects_and_is_announced() {
         upload(&h, &token, &vault_id, fill).await;
     }
     let (replacement, _) = upload(&h, &token, &vault_id, 9).await;
-    let capabilities = h.get("/v1/capabilities", None).await;
+    let capabilities = h.get("/v2/capabilities", None).await;
     assert_eq!(capabilities.json()["chunkReplace"], true);
 
     let reply = h
         .post_json(
-            &format!("/v1/vaults/{vault_id}/chunks:replace"),
+            &format!("/v2/vaults/{vault_id}/chunks:replace"),
             Some(&token),
             json!({"removeSeqs": [], "chunkIds": [replacement]}),
         )
@@ -975,7 +975,7 @@ async fn replacing_chunks_drops_their_objects_and_is_announced() {
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let reply = h
         .post_json(
-            &format!("/v1/vaults/{vault_id}/chunks:replace"),
+            &format!("/v2/vaults/{vault_id}/chunks:replace"),
             Some(&token),
             json!({"removeSeqs": [2], "chunkIds": [replacement]}),
         )
@@ -985,7 +985,7 @@ async fn replacing_chunks_drops_their_objects_and_is_announced() {
     assert_eq!(h.state.objects.memory_keys().len(), 3);
     let batch = h
         .get(
-            &format!("/v1/vaults/{vault_id}/chunks:batch?after=0"),
+            &format!("/v2/vaults/{vault_id}/chunks:batch?after=0"),
             Some(&token),
         )
         .await;
@@ -1005,7 +1005,7 @@ async fn retried_upload_does_not_store_a_second_object() {
     let chunk_id = vrcx_0_nanashi_website_protocol::ids::ChunkId::random()
         .unwrap()
         .to_string();
-    let path = format!("/v1/vaults/{vault_id}/chunks");
+    let path = format!("/v2/vaults/{vault_id}/chunks");
     for _ in 0..2 {
         let reply = h
             .call(
@@ -1043,7 +1043,7 @@ async fn deleting_data_removes_the_old_prefix_and_new_data_uses_a_new_one() {
     let reply = h
         .call(
             Method::DELETE,
-            "/v1/account/data",
+            "/v2/account/data",
             Some(&token),
             &[],
             Body::empty(),
@@ -1073,12 +1073,14 @@ async fn orphan_sweep_removes_only_old_unreferenced_objects() {
     let prefix = format!("{}/", kept.rsplit_once('/').unwrap().0);
     let old_orphan = format!("{prefix}{}", "a".repeat(32));
     let fresh_orphan = format!("{prefix}{}", "b".repeat(32));
+    h.state.objects.memory_insert(
+        &old_orphan,
+        vec![1],
+        now_epoch() - 2 * (crate::util::DAY_MS / 1000),
+    );
     h.state
         .objects
-        .memory_insert(&old_orphan, vec![1], now_ms() - 2 * crate::util::DAY_MS);
-    h.state
-        .objects
-        .memory_insert(&fresh_orphan, vec![1], now_ms());
+        .memory_insert(&fresh_orphan, vec![1], now_epoch());
     assert_eq!(h.state.sweep_orphans().await.unwrap(), 1);
     let mut keys = h.state.objects.memory_keys();
     keys.sort();
@@ -1095,7 +1097,7 @@ async fn repeated_bad_tokens_are_rate_limited() {
         let reply = h
             .call(
                 Method::GET,
-                "/v1/account",
+                "/v2/account",
                 Some("rs1_garbage"),
                 &ip,
                 Body::empty(),
@@ -1106,7 +1108,7 @@ async fn repeated_bad_tokens_are_rate_limited() {
     let reply = h
         .call(
             Method::GET,
-            "/v1/account",
+            "/v2/account",
             Some("rs1_garbage"),
             &ip,
             Body::empty(),
@@ -1118,7 +1120,7 @@ async fn repeated_bad_tokens_are_rate_limited() {
     let reply = h
         .call(
             Method::GET,
-            "/v1/account",
+            "/v2/account",
             Some("rs1_garbage"),
             &other_ip,
             Body::empty(),
@@ -1139,7 +1141,7 @@ async fn pairing_requests_are_rate_limited_per_ip() {
         let reply = h
             .call(
                 Method::POST,
-                "/v1/device/authorize",
+                "/v2/device/authorize",
                 None,
                 &ip,
                 Body::from(body.clone()),
@@ -1150,7 +1152,7 @@ async fn pairing_requests_are_rate_limited_per_ip() {
     let reply = h
         .call(
             Method::POST,
-            "/v1/device/authorize",
+            "/v2/device/authorize",
             None,
             &ip,
             Body::from(body),
@@ -1168,7 +1170,7 @@ async fn delete_data_shreds_the_account_file() {
     let keys = VaultKeys::derive(&SyncSecret::generate().unwrap(), vault_id).public();
     let body = json!({"vaultId": vault_id, "vaultPk": b64::encode(keys.vault_pk.as_bytes()), "manifestPk": b64::encode(keys.manifest_pk.as_bytes())});
     assert_eq!(
-        h.post_json("/v1/vaults", Some(&token), body.clone())
+        h.post_json("/v2/vaults", Some(&token), body.clone())
             .await
             .status,
         StatusCode::CREATED
@@ -1187,7 +1189,7 @@ async fn delete_data_shreds_the_account_file() {
     let reply = h
         .call(
             Method::DELETE,
-            "/v1/account/data",
+            "/v2/account/data",
             Some(&token),
             &[],
             Body::empty(),
@@ -1204,9 +1206,9 @@ async fn delete_data_shreds_the_account_file() {
             .wrapped_adk
             .is_none()
     );
-    assert_eq!(h.get("/v1/vaults", Some(&token)).await.json(), json!([]));
+    assert_eq!(h.get("/v2/vaults", Some(&token)).await.json(), json!([]));
     assert_eq!(
-        h.post_json("/v1/vaults", Some(&token), body).await.status,
+        h.post_json("/v2/vaults", Some(&token), body).await.status,
         StatusCode::CREATED
     );
     assert_ne!(
@@ -1242,7 +1244,7 @@ fn totp_now(secret_b32: &str) -> String {
     let secret = data_encoding::BASE32_NOPAD
         .decode(secret_b32.as_bytes())
         .unwrap();
-    format!("{:06}", crate::totp::code_at(&secret, now_ms() / 1000 / 30))
+    format!("{:06}", crate::totp::code_at(&secret, now_epoch() / 30))
 }
 
 const PASSWORD: &str = "a long and unusual passphrase";
@@ -1250,7 +1252,7 @@ const PASSWORD: &str = "a long and unusual passphrase";
 async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<String>) {
     let reply = h
         .post_json(
-            "/web/v1/auth/signup",
+            "/web/v2/auth/signup",
             None,
             json!({"email": email, "password": PASSWORD, "message": "hi"}),
         )
@@ -1260,12 +1262,12 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
     assert_eq!(mail.to, email);
     let token = link_token(&mail.text);
     let reply = h
-        .post_json("/web/v1/auth/verify", None, json!({"token": token}))
+        .post_json("/web/v2/auth/verify", None, json!({"token": token}))
         .await;
     assert_eq!(reply.status, StatusCode::OK);
     let challenge = reply.json()["challenge"].as_str().unwrap().to_owned();
     assert_eq!(
-        h.post_json("/web/v1/auth/verify", None, json!({"token": token}))
+        h.post_json("/web/v2/auth/verify", None, json!({"token": token}))
             .await
             .status,
         StatusCode::UNAUTHORIZED,
@@ -1273,7 +1275,7 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
     );
     let setup = h
         .post_json(
-            "/web/v1/auth/enroll/totp",
+            "/web/v2/auth/enroll/totp",
             None,
             json!({"challenge": challenge}),
         )
@@ -1288,7 +1290,7 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
     );
     let wrong = h
         .post_json(
-            "/web/v1/auth/enroll/totp/confirm",
+            "/web/v2/auth/enroll/totp/confirm",
             None,
             json!({"challenge": challenge, "code": "000000"}),
         )
@@ -1296,7 +1298,7 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
     let done = h
         .post_json(
-            "/web/v1/auth/enroll/totp/confirm",
+            "/web/v2/auth/enroll/totp/confirm",
             None,
             json!({"challenge": challenge, "code": totp_now(&secret)}),
         )
@@ -1314,7 +1316,7 @@ async fn sign_up_with_totp(h: &Harness, email: &str) -> (String, String, Vec<Str
 }
 
 async fn approve_session(h: &Harness, session: &str) {
-    let me = h.get("/web/v1/me", Some(session)).await.json();
+    let me = h.get("/web/v2/me", Some(session)).await.json();
     let account: AccountId = me["accountId"].as_str().unwrap().parse().unwrap();
     h.state.approve_account(&account, "test").unwrap();
 }
@@ -1323,7 +1325,7 @@ async fn approve_session(h: &Harness, session: &str) {
 async fn signup_verify_enroll_and_approval() {
     let h = Harness::with_registration(None, Registration::Request);
     let (session, _, _) = sign_up_with_totp(&h, "new@example.com").await;
-    let me = h.get("/web/v1/me", Some(&session)).await.json();
+    let me = h.get("/web/v2/me", Some(&session)).await.json();
     assert_eq!(me["state"], "pending");
     assert_eq!(me["twofaMethod"], "totp");
     assert_eq!(
@@ -1341,21 +1343,21 @@ async fn signup_verify_enroll_and_approval() {
         "hi"
     );
     assert_eq!(
-        h.get("/v1/account", Some(&session)).await.status,
+        h.get("/v2/account", Some(&session)).await.status,
         StatusCode::UNAUTHORIZED
     );
     let api = h.token(&account, ALL);
     h.state.approve_account(&account, "test").unwrap();
     assert_eq!(
-        h.get("/web/v1/me", Some(&api)).await.status,
+        h.get("/web/v2/me", Some(&api)).await.status,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.json()["state"],
+        h.get("/web/v2/me", Some(&session)).await.json()["state"],
         "active"
     );
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.json()["recoveryCodesLeft"],
+        h.get("/web/v2/me", Some(&session)).await.json()["recoveryCodesLeft"],
         10
     );
 }
@@ -1365,7 +1367,7 @@ async fn signup_is_closed_by_default_and_does_not_reveal_existing_accounts() {
     let closed = Harness::new(None);
     let reply = closed
         .post_json(
-            "/web/v1/auth/signup",
+            "/web/v2/auth/signup",
             None,
             json!({"email": "a@example.com", "password": PASSWORD}),
         )
@@ -1376,7 +1378,7 @@ async fn signup_is_closed_by_default_and_does_not_reveal_existing_accounts() {
     sign_up_with_totp(&h, "taken@example.com").await;
     let reply = h
         .post_json(
-            "/web/v1/auth/signup",
+            "/web/v2/auth/signup",
             None,
             json!({"email": "taken@example.com", "password": PASSWORD}),
         )
@@ -1393,7 +1395,7 @@ async fn signup_is_closed_by_default_and_does_not_reveal_existing_accounts() {
     );
     let weak = h
         .post_json(
-            "/web/v1/auth/signup",
+            "/web/v2/auth/signup",
             None,
             json!({"email": "b@example.com", "password": "short"}),
         )
@@ -1407,14 +1409,14 @@ async fn sign_in_with_totp_and_generic_errors() {
     let (_, secret, _) = sign_up_with_totp(&h, "me@example.com").await;
     let wrong = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "me@example.com", "password": "not the password at all"}),
         )
         .await;
     let unknown = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "nobody@example.com", "password": PASSWORD}),
         )
@@ -1428,7 +1430,7 @@ async fn sign_in_with_totp_and_generic_errors() {
 
     let reply = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "ME@example.com", "password": PASSWORD}),
         )
@@ -1439,7 +1441,7 @@ async fn sign_in_with_totp_and_generic_errors() {
     let code = totp_now(&secret);
     let replay = h
         .post_json(
-            "/web/v1/auth/login/2fa",
+            "/web/v2/auth/login/2fa",
             None,
             json!({"challenge": challenge, "method": "totp", "code": code}),
         )
@@ -1458,7 +1460,7 @@ async fn sign_in_with_recovery_code_emails_a_notice() {
     approve_session(&h, &signup_session).await;
     let reply = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "me@example.com", "password": PASSWORD}),
         )
@@ -1466,7 +1468,7 @@ async fn sign_in_with_recovery_code_emails_a_notice() {
     let challenge = reply.json()["challenge"].as_str().unwrap().to_owned();
     let reply = h
         .post_json(
-            "/web/v1/auth/login/2fa",
+            "/web/v2/auth/login/2fa",
             None,
             json!({"challenge": challenge, "method": "recovery", "code": codes[0]}),
         )
@@ -1474,7 +1476,7 @@ async fn sign_in_with_recovery_code_emails_a_notice() {
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
     let session = reply.json()["session"].as_str().unwrap().to_owned();
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.json()["recoveryCodesLeft"],
+        h.get("/web/v2/me", Some(&session)).await.json()["recoveryCodesLeft"],
         9
     );
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1489,7 +1491,7 @@ async fn sign_in_with_recovery_code_emails_a_notice() {
     assert!(subjects.contains(&"New sign-in".to_owned()));
     let again = h
         .post_json(
-            "/web/v1/auth/login/2fa",
+            "/web/v2/auth/login/2fa",
             None,
             json!({"challenge": challenge, "method": "recovery", "code": codes[1]}),
         )
@@ -1501,14 +1503,14 @@ async fn sign_in_with_recovery_code_emails_a_notice() {
 async fn email_two_factor_enrollment_and_sign_in() {
     let h = Harness::with_registration(None, Registration::Request);
     h.post_json(
-        "/web/v1/auth/signup",
+        "/web/v2/auth/signup",
         None,
         json!({"email": "mail@example.com", "password": PASSWORD}),
     )
     .await;
     let token = link_token(&last_email(&h).text);
     let challenge = h
-        .post_json("/web/v1/auth/verify", None, json!({"token": token}))
+        .post_json("/web/v2/auth/verify", None, json!({"token": token}))
         .await
         .json()["challenge"]
         .as_str()
@@ -1516,7 +1518,7 @@ async fn email_two_factor_enrollment_and_sign_in() {
         .to_owned();
     assert_eq!(
         h.post_json(
-            "/web/v1/auth/enroll/email",
+            "/web/v2/auth/enroll/email",
             None,
             json!({"challenge": challenge})
         )
@@ -1527,7 +1529,7 @@ async fn email_two_factor_enrollment_and_sign_in() {
     let code = last_email(&h).text.split("code is: ").nth(1).unwrap()[..6].to_owned();
     let done = h
         .post_json(
-            "/web/v1/auth/enroll/email/confirm",
+            "/web/v2/auth/enroll/email/confirm",
             None,
             json!({"challenge": challenge, "code": code}),
         )
@@ -1536,7 +1538,7 @@ async fn email_two_factor_enrollment_and_sign_in() {
 
     let reply = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "mail@example.com", "password": PASSWORD}),
         )
@@ -1544,7 +1546,7 @@ async fn email_two_factor_enrollment_and_sign_in() {
     assert_eq!(reply.json()["methods"], json!(["email", "recovery"]));
     let challenge = reply.json()["challenge"].as_str().unwrap().to_owned();
     h.post_json(
-        "/web/v1/auth/login/email-code",
+        "/web/v2/auth/login/email-code",
         None,
         json!({"challenge": challenge}),
     )
@@ -1552,14 +1554,14 @@ async fn email_two_factor_enrollment_and_sign_in() {
     let code = last_email(&h).text.split("code is: ").nth(1).unwrap()[..6].to_owned();
     let reply = h
         .post_json(
-            "/web/v1/auth/login/2fa",
+            "/web/v2/auth/login/2fa",
             None,
             json!({"challenge": challenge, "method": "email", "code": code}),
         )
         .await;
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
     let session = reply.json()["session"].as_str().unwrap().to_owned();
-    let me = h.get("/web/v1/me", Some(&session)).await.json();
+    let me = h.get("/web/v2/me", Some(&session)).await.json();
     assert_eq!(me["twofaMethod"], "email");
     assert_eq!(me["adminAvailable"], false);
 }
@@ -1571,7 +1573,7 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     approve_session(&h, &old_session).await;
     assert_eq!(
         h.post_json(
-            "/web/v1/auth/reset",
+            "/web/v2/auth/reset",
             None,
             json!({"email": "nobody@example.com"})
         )
@@ -1582,7 +1584,7 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     let sent_before = h.state.mailer.sent().len();
     assert_eq!(
         h.post_json(
-            "/web/v1/auth/reset",
+            "/web/v2/auth/reset",
             None,
             json!({"email": "reset@example.com"})
         )
@@ -1595,7 +1597,7 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     let new_password = "another long passphrase here";
     let reply = h
         .post_json(
-            "/web/v1/auth/reset/finish",
+            "/web/v2/auth/reset/finish",
             None,
             json!({"token": token, "password": new_password}),
         )
@@ -1604,7 +1606,7 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     let challenge = reply.json()["challenge"].as_str().unwrap().to_owned();
     let still_old = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "reset@example.com", "password": PASSWORD}),
         )
@@ -1612,20 +1614,20 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     assert_eq!(still_old.status, StatusCode::OK);
     let reply = h
         .post_json(
-            "/web/v1/auth/login/2fa",
+            "/web/v2/auth/login/2fa",
             None,
             json!({"challenge": challenge, "method": "recovery", "code": codes[2]}),
         )
         .await;
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
     assert_eq!(
-        h.get("/web/v1/me", Some(&old_session)).await.status,
+        h.get("/web/v2/me", Some(&old_session)).await.status,
         StatusCode::UNAUTHORIZED,
         "old sessions ended"
     );
     let new_login = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "reset@example.com", "password": new_password}),
         )
@@ -1633,7 +1635,7 @@ async fn password_reset_requires_second_factor_and_ends_sessions() {
     assert_eq!(new_login.status, StatusCode::OK);
     let old_login = h
         .post_json(
-            "/web/v1/auth/login",
+            "/web/v2/auth/login",
             None,
             json!({"email": "reset@example.com", "password": PASSWORD}),
         )
@@ -1646,36 +1648,36 @@ async fn reauth_regenerates_recovery_codes_and_sign_out() {
     let h = Harness::with_registration(None, Registration::Request);
     let (session, _, codes) = sign_up_with_totp(&h, "me@example.com").await;
     let reply = h
-        .post_json("/web/v1/recovery-codes", Some(&session), json!({}))
+        .post_json("/web/v2/recovery-codes", Some(&session), json!({}))
         .await;
     assert_eq!(reply.code(), "account_not_active");
     approve_session(&h, &session).await;
     let reply = h
-        .post_json("/web/v1/recovery-codes", Some(&session), json!({}))
+        .post_json("/web/v2/recovery-codes", Some(&session), json!({}))
         .await;
     assert_eq!(reply.code(), "reauth_required");
     let reply = h
         .post_json(
-            "/web/v1/reauth",
+            "/web/v2/reauth",
             Some(&session),
             json!({"method": "recovery", "code": codes[0]}),
         )
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    let me = h.get("/web/v1/me", Some(&session)).await.json();
-    assert!(me["recentAuthUntilMs"].as_i64().unwrap() > now_ms());
+    let me = h.get("/web/v2/me", Some(&session)).await.json();
+    assert!(me["recentAuthUntil"].as_i64().unwrap() > now_epoch());
     assert!(
-        me["recentTotpUntilMs"].as_i64().unwrap() < now_ms(),
+        me["recentTotpUntil"].as_i64().unwrap() < now_epoch(),
         "a recovery code is not a TOTP code"
     );
     let fresh = h
-        .post_json("/web/v1/recovery-codes", Some(&session), json!({}))
+        .post_json("/web/v2/recovery-codes", Some(&session), json!({}))
         .await
         .json();
     assert_eq!(fresh["recoveryCodes"].as_array().unwrap().len(), 10);
     let old = h
         .post_json(
-            "/web/v1/reauth",
+            "/web/v2/reauth",
             Some(&session),
             json!({"method": "recovery", "code": codes[1]}),
         )
@@ -1688,7 +1690,7 @@ async fn reauth_regenerates_recovery_codes_and_sign_out() {
     let reply = h
         .call(
             Method::DELETE,
-            "/web/v1/session",
+            "/web/v2/session",
             Some(&session),
             &[],
             Body::empty(),
@@ -1696,7 +1698,7 @@ async fn reauth_regenerates_recovery_codes_and_sign_out() {
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.status,
+        h.get("/web/v2/me", Some(&session)).await.status,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -1714,7 +1716,7 @@ fn web_session(h: &Harness, recent: bool) -> (AccountId, String) {
         .id;
         h.state
             .registry()
-            .set_recent_auth(&id, now_ms() + 600_000)
+            .set_recent_auth(&id, now_epoch() + 600)
             .unwrap();
     }
     (account, session)
@@ -1732,19 +1734,19 @@ async fn cors_only_for_website_origins_and_only_on_web_routes() {
         h.call(Method::OPTIONS, path, None, &headers, Body::empty())
             .await
     }
-    let allowed = preflight(&h, "https://vrcx.namelessnanashi.dev", "/web/v1/me").await;
+    let allowed = preflight(&h, "https://vrcx.namelessnanashi.dev", "/web/v2/me").await;
     assert_eq!(
         allowed.headers.get("access-control-allow-origin").unwrap(),
         "https://vrcx.namelessnanashi.dev"
     );
-    let other = preflight(&h, "https://evil.example", "/web/v1/me").await;
+    let other = preflight(&h, "https://evil.example", "/web/v2/me").await;
     assert!(other.headers.get("access-control-allow-origin").is_none());
-    let app_api = preflight(&h, "https://vrcx.namelessnanashi.dev", "/v1/account").await;
+    let app_api = preflight(&h, "https://vrcx.namelessnanashi.dev", "/v2/account").await;
     assert!(app_api.headers.get("access-control-allow-origin").is_none());
     let public = preflight(
         &h,
         "https://vrcx.namelessnanashi.dev",
-        "/public/v1/collections",
+        "/public/v2/collections",
     )
     .await;
     assert_eq!(
@@ -1759,11 +1761,11 @@ async fn website_sessions_use_the_shared_routes_with_extra_checks() {
     let (account, session) = web_session(&h, false);
     let vault = make_vault(&h, &session).await;
     upload(&h, &session, &vault, 3).await;
-    let vaults = h.get("/web/v1/vaults", Some(&session)).await.json();
+    let vaults = h.get("/web/v2/vaults", Some(&session)).await.json();
     assert_eq!(vaults[0]["vaultId"], vault.to_string());
     let batch = h
         .get(
-            &format!("/web/v1/vaults/{vault}/chunks:batch?after=0"),
+            &format!("/web/v2/vaults/{vault}/chunks:batch?after=0"),
             Some(&session),
         )
         .await;
@@ -1771,7 +1773,7 @@ async fn website_sessions_use_the_shared_routes_with_extra_checks() {
     let reply = h
         .call(
             Method::DELETE,
-            &format!("/web/v1/vaults/{vault}"),
+            &format!("/web/v2/vaults/{vault}"),
             Some(&session),
             &[],
             Body::empty(),
@@ -1781,7 +1783,7 @@ async fn website_sessions_use_the_shared_routes_with_extra_checks() {
     let reply = h
         .call(
             Method::DELETE,
-            "/web/v1/account/data",
+            "/web/v2/account/data",
             Some(&session),
             &[],
             Body::empty(),
@@ -1793,11 +1795,11 @@ async fn website_sessions_use_the_shared_routes_with_extra_checks() {
         .set_state(&account, AccountState::Pending)
         .unwrap();
     assert_eq!(
-        h.get("/web/v1/vaults", Some(&session)).await.code(),
+        h.get("/web/v2/vaults", Some(&session)).await.code(),
         "account_not_active"
     );
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.status,
+        h.get("/web/v2/me", Some(&session)).await.status,
         StatusCode::OK
     );
 }
@@ -1819,20 +1821,20 @@ async fn website_admin_routes_require_recent_totp_and_respect_roles() {
     let target_id = h.account(None);
 
     assert_eq!(
-        h.get("/web/v1/admin/accounts", Some(&session)).await.code(),
+        h.get("/web/v2/admin/accounts", Some(&session)).await.code(),
         "totp_required"
     );
     h.state.registry().set_totp(&admin_id, &[7; 48]).unwrap();
     assert_eq!(
-        h.get("/web/v1/admin/accounts", Some(&session)).await.code(),
+        h.get("/web/v2/admin/accounts", Some(&session)).await.code(),
         "totp_reauth_required"
     );
     h.state
         .registry()
-        .set_recent_totp(&admin_session_id, now_ms() + 600_000)
+        .set_recent_totp(&admin_session_id, now_epoch() + 600)
         .unwrap();
 
-    let listed = h.get("/web/v1/admin/accounts", Some(&session)).await;
+    let listed = h.get("/web/v2/admin/accounts", Some(&session)).await;
     assert_eq!(listed.status, StatusCode::OK);
     assert!(
         listed
@@ -1845,7 +1847,7 @@ async fn website_admin_routes_require_recent_totp_and_respect_roles() {
     let role = h
         .call(
             Method::PUT,
-            &format!("/web/v1/admin/accounts/{target_id}/role"),
+            &format!("/web/v2/admin/accounts/{target_id}/role"),
             Some(&session),
             &[("content-type", "application/json")],
             Body::from(r#"{"role":"admin"}"#),
@@ -1867,7 +1869,7 @@ async fn website_admin_routes_require_recent_totp_and_respect_roles() {
         .unwrap();
     let resume = h
         .post_json(
-            &format!("/web/v1/admin/accounts/{target_id}/resume"),
+            &format!("/web/v2/admin/accounts/{target_id}/resume"),
             Some(&session),
             json!({}),
         )
@@ -1901,13 +1903,13 @@ async fn website_admin_invites_and_persisted_settings_work() {
     h.state.registry().set_totp(&admin_id, &[3; 48]).unwrap();
     h.state
         .registry()
-        .set_recent_totp(&session_id, now_ms() + 600_000)
+        .set_recent_totp(&session_id, now_epoch() + 600)
         .unwrap();
 
     let settings = h
         .call(
             Method::PUT,
-            "/web/v1/admin/settings",
+            "/web/v2/admin/settings",
             Some(&session),
             &[("content-type", "application/json")],
             Body::from(r#"{"registration":"request","defaultQuota":"64MiB","collectorDefaultAllowed":false}"#),
@@ -1915,14 +1917,14 @@ async fn website_admin_invites_and_persisted_settings_work() {
         .await;
     assert_eq!(settings.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        h.get("/v1/capabilities", None).await.json()["registration"],
+        h.get("/v2/capabilities", None).await.json()["registration"],
         "request"
     );
 
     let before = h.state.mailer.sent().len();
     let invited = h
         .post_json(
-            "/web/v1/admin/invites",
+            "/web/v2/admin/invites",
             Some(&session),
             json!({"email":"invite@example.com"}),
         )
@@ -1942,7 +1944,7 @@ async fn website_admin_invites_and_persisted_settings_work() {
     let changed = h
         .call(
             Method::PUT,
-            &format!("/web/v1/admin/accounts/{}/limits", account.account_id),
+            &format!("/web/v2/admin/accounts/{}/limits", account.account_id),
             Some(&session),
             &[("content-type", "application/json")],
             Body::from(r#"{"quota":"32MiB","maxVaults":2}"#),
@@ -1958,7 +1960,7 @@ async fn website_admin_invites_and_persisted_settings_work() {
     assert_eq!(updated.quota_bytes, Some(32 << 20));
     assert_eq!(updated.max_vaults, 2);
     assert!(
-        h.get("/web/v1/admin/audit", Some(&session))
+        h.get("/web/v2/admin/audit", Some(&session))
             .await
             .json()
             .as_array()
@@ -1976,13 +1978,14 @@ async fn website_admin_invites_and_persisted_settings_work() {
     )
     .unwrap();
     assert_eq!(
-        h.get("/v1/capabilities", None).await.json()["registration"],
+        h.get("/v2/capabilities", None).await.json()["registration"],
         "closed"
     );
 }
 
 #[tokio::test]
 async fn collections_round_trip_between_owner_and_public_routes() {
+    let started = now_epoch();
     let h = Harness::new(None);
     let account = h.account(None);
     let share = h.token(&account, &[Scope::Share]);
@@ -1992,7 +1995,7 @@ async fn collections_round_trip_between_owner_and_public_routes() {
         "worlds":[{"world_id":"wrld_example", "name":"World", "author_name":"Maker", "image_url":"", "description":"", "comment":"Visit"}]
     });
     let created = h
-        .post_json("/v1/collections", Some(&share), payload.clone())
+        .post_json("/v2/collections", Some(&share), payload.clone())
         .await;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
     let created_body = created.json();
@@ -2002,13 +2005,13 @@ async fn collections_round_trip_between_owner_and_public_routes() {
         format!("https://vrcx.namelessnanashi.dev/c/{code}")
     );
     assert_eq!(
-        h.get(&format!("/public/v1/collections/{code}"), None)
+        h.get(&format!("/public/v2/collections/{code}"), None)
             .await
             .json()["title"],
         "Favorite worlds"
     );
     assert_eq!(
-        h.get("/public/v1/collections", None)
+        h.get("/public/v2/collections", None)
             .await
             .json()
             .as_array()
@@ -2018,22 +2021,32 @@ async fn collections_round_trip_between_owner_and_public_routes() {
     );
 
     let mut listed = h
-        .get(&format!("/public/v1/collections/{code}"), None)
+        .get(&format!("/public/v2/collections/{code}"), None)
         .await
         .json();
+    assert!((started..=now_epoch()).contains(&listed["updated_at"].as_i64().unwrap()));
     listed["listed"] = json!(true);
     let updated = h
         .call(
             Method::PUT,
-            &format!("/v1/collections/{code}"),
+            &format!("/v2/collections/{code}"),
             Some(&share),
             &[("content-type", "application/json")],
             Body::from(listed.to_string()),
         )
         .await;
     assert_eq!(updated.status, StatusCode::OK);
+    assert!((started..=now_epoch()).contains(&updated.json()["updated_at"].as_i64().unwrap()));
+    let public_listing = h.get("/public/v2/collections", None).await.json();
+    assert!((started..=now_epoch()).contains(&public_listing[0]["updated_at"].as_i64().unwrap()));
     assert_eq!(
-        h.get("/public/v1/collections", None)
+        h.get(&format!("/public/v2/collections?before={started}"), None)
+            .await
+            .json(),
+        json!([])
+    );
+    assert_eq!(
+        h.get("/public/v2/collections", None)
             .await
             .json()
             .as_array()
@@ -2042,7 +2055,7 @@ async fn collections_round_trip_between_owner_and_public_routes() {
         1
     );
     assert_eq!(
-        h.get("/v1/collections", Some(&share))
+        h.get("/v2/collections", Some(&share))
             .await
             .json()
             .as_array()
@@ -2054,7 +2067,7 @@ async fn collections_round_trip_between_owner_and_public_routes() {
     let deleted = h
         .call(
             Method::DELETE,
-            &format!("/v1/collections/{code}"),
+            &format!("/v2/collections/{code}"),
             Some(&share),
             &[],
             Body::empty(),
@@ -2062,7 +2075,7 @@ async fn collections_round_trip_between_owner_and_public_routes() {
         .await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        h.get(&format!("/public/v1/collections/{code}"), None)
+        h.get(&format!("/public/v2/collections/{code}"), None)
             .await
             .status,
         StatusCode::NOT_FOUND
@@ -2134,7 +2147,7 @@ async fn pairing_is_approved_on_the_website() {
     let (_, session) = web_session(&h, true);
     let started = h
         .post_json(
-            "/v1/device/authorize",
+            "/v2/device/authorize",
             None,
             json!({"deviceLabel": "Gaming PC", "requestedScopes": ["sync", "collector", "share"]}),
         )
@@ -2144,13 +2157,13 @@ async fn pairing_is_approved_on_the_website() {
     let device_code = started["deviceCode"].as_str().unwrap().to_owned();
     let typed = user_code.to_ascii_lowercase().replace('-', "");
     let info = h
-        .get(&format!("/web/v1/pair/{typed}"), Some(&session))
+        .get(&format!("/web/v2/pair/{typed}"), Some(&session))
         .await
         .json();
     assert_eq!(info["deviceLabel"], "Gaming PC");
     let reply = h
         .post_json(
-            &format!("/web/v1/pair/{typed}/approve"),
+            &format!("/web/v2/pair/{typed}/approve"),
             Some(&session),
             json!({"scopes": ["sync"]}),
         )
@@ -2159,7 +2172,7 @@ async fn pairing_is_approved_on_the_website() {
     let hash = h.state.keys.hmac("device-code", device_code.as_bytes());
     h.state.registry().set_pairing_poll(&hash, 0, 5).unwrap();
     let token = h
-        .post_json("/v1/device/token", None, json!({"deviceCode": device_code}))
+        .post_json("/v2/device/token", None, json!({"deviceCode": device_code}))
         .await
         .json();
     assert_eq!(
@@ -2168,7 +2181,7 @@ async fn pairing_is_approved_on_the_website() {
         "the user reduced the scopes"
     );
     assert_eq!(
-        h.get(&format!("/web/v1/pair/{typed}"), Some(&session))
+        h.get(&format!("/web/v2/pair/{typed}"), Some(&session))
             .await
             .code(),
         "pairing_not_found"
@@ -2181,7 +2194,7 @@ async fn manual_tokens_need_recent_auth() {
     let (_, stale) = web_session(&h, false);
     let reply = h
         .post_json(
-            "/web/v1/tokens",
+            "/web/v2/tokens",
             Some(&stale),
             json!({"label": "server", "scopes": ["sync"]}),
         )
@@ -2190,7 +2203,7 @@ async fn manual_tokens_need_recent_auth() {
     let (_, fresh) = web_session(&h, true);
     let reply = h
         .post_json(
-            "/web/v1/tokens",
+            "/web/v2/tokens",
             Some(&fresh),
             json!({"label": "server", "scopes": ["sync"]}),
         )
@@ -2198,7 +2211,7 @@ async fn manual_tokens_need_recent_auth() {
     assert_eq!(reply.status, StatusCode::CREATED);
     let token = reply.json()["token"].as_str().unwrap().to_owned();
     assert_eq!(
-        h.get("/v1/account", Some(&token)).await.status,
+        h.get("/v2/account", Some(&token)).await.status,
         StatusCode::OK
     );
 }
@@ -2221,7 +2234,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
     .unwrap();
     let rejected = h
         .post_json(
-            "/web/v1/envelopes",
+            "/web/v2/envelopes",
             Some(&session),
             serde_json::to_value(&legacy_passkey).unwrap(),
         )
@@ -2240,23 +2253,29 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
         0,
     )
     .unwrap();
-    let body = serde_json::to_string(&passphrase).unwrap();
+    let mut legacy_envelope = serde_json::to_value(&passphrase).unwrap();
+    legacy_envelope["v"] = json!(1);
+    legacy_envelope.as_object_mut().unwrap().remove("createdAt");
+    legacy_envelope["createdAtMs"] = json!(-1);
+    let body = serde_json::to_string(&legacy_envelope).unwrap();
     let reply = h
         .call(
             Method::POST,
-            "/web/v1/envelopes",
+            "/web/v2/envelopes",
             Some(&session),
             &[("content-type", "application/json")],
             Body::from(body.clone()),
         )
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    let list = h.get("/web/v1/envelopes", Some(&session)).await.json();
+    let list = h.get("/web/v2/envelopes", Some(&session)).await.json();
     assert_eq!(list[0]["kind"], "passphrase");
     assert_eq!(list[0]["label"], "Laptop recovery");
-    let path = format!("/web/v1/envelopes/{}", passphrase.envelope_id);
-    let fetched: envelope::KeyEnvelope =
-        serde_json::from_slice(&h.get(&path, Some(&session)).await.body).unwrap();
+    let path = format!("/web/v2/envelopes/{}", passphrase.envelope_id);
+    let fetched_body = h.get(&path, Some(&session)).await.body;
+    assert_eq!(fetched_body, body.as_bytes());
+    let fetched: envelope::KeyEnvelope = serde_json::from_slice(&fetched_body).unwrap();
+    assert_eq!(fetched.created_at, -1);
     assert_eq!(
         envelope::open_with_passphrase(&fetched, &account, "a long recovery phrase").unwrap(),
         secret,
@@ -2277,7 +2296,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
     let reply = h
         .call(
             Method::POST,
-            "/web/v1/envelopes",
+            "/web/v2/envelopes",
             Some(&session),
             &[],
             Body::from(weak.to_string()),
@@ -2288,7 +2307,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
     let reply = h
         .call(
             Method::DELETE,
-            "/web/v1/envelopes",
+            "/web/v2/envelopes",
             Some(&session),
             &[],
             Body::empty(),
@@ -2296,7 +2315,7 @@ async fn key_envelopes_are_stored_fetched_rate_limited_and_deleted() {
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        h.get("/web/v1/envelopes", Some(&session)).await.json(),
+        h.get("/web/v2/envelopes", Some(&session)).await.json(),
         json!([])
     );
 }
@@ -2310,7 +2329,7 @@ async fn deleting_the_account_from_the_website() {
     let reply = h
         .call(
             Method::DELETE,
-            "/web/v1/account",
+            "/web/v2/account",
             Some(&session),
             &[],
             Body::empty(),
@@ -2321,7 +2340,7 @@ async fn deleting_the_account_from_the_website() {
     h.state.process_deletions().await.unwrap();
     assert!(h.state.objects.memory_keys().is_empty());
     assert_eq!(
-        h.get("/web/v1/me", Some(&session)).await.status,
+        h.get("/web/v2/me", Some(&session)).await.status,
         StatusCode::UNAUTHORIZED
     );
 
@@ -2333,11 +2352,24 @@ async fn deleting_the_account_from_the_website() {
     let reply = h
         .call(
             Method::DELETE,
-            "/web/v1/account",
+            "/web/v2/account",
             Some(&owner_session),
             &[],
             Body::empty(),
         )
         .await;
     assert_eq!(reply.code(), "owner_cli_only");
+}
+
+#[tokio::test]
+async fn legacy_api_requires_an_upgrade_instead_of_mixing_timestamp_units() {
+    let h = Harness::new(None);
+    for path in ["/v1/capabilities", "/web/v1/me", "/public/v1/collections"] {
+        let response = h.get(path, None).await;
+        assert_eq!(response.status, StatusCode::UPGRADE_REQUIRED);
+        assert_eq!(response.code(), "upgrade_required");
+    }
+    let capabilities = h.get("/v2/capabilities", None).await.json();
+    assert_eq!(capabilities["protocol"], json!([2]));
+    assert_eq!(capabilities["webApi"], json!([2]));
 }

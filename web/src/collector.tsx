@@ -5,10 +5,10 @@ import { formatBytes } from './site'
 
 type Vault = { vaultId: string; manifestSeq: number; maxSeq: number; usageBytes: number }
 type Capabilities = { available: boolean; unlockKey: string } | null
-type Status = { state: string; sinceMs?: number | null; lastChunkAtMs?: number | null; lastError?: string | null }
+type Status = { state: string; since?: number | null; lastChunkAt?: number | null; lastError?: string | null }
 type VaultRow = { vault: Vault; status: Status | null; error: string }
 const decode = (text: string) => Uint8Array.from(atob(text.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - text.length % 4) % 4)), c => c.charCodeAt(0))
-const when = (ms?: number | null) => ms ? new Date(ms).toLocaleString() : 'Never'
+const when = (seconds?: number | null) => seconds != null ? new Date(seconds * 1000).toLocaleString() : 'Never'
 
 export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId: string; allowed: boolean; unlocked: boolean; act: (f: () => Promise<void>) => Promise<void> }) {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
@@ -26,7 +26,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
   const refresh = useCallback(async () => {
     setLoading(true); setLoadError('')
     try {
-      const [caps, vaults] = await Promise.all([apiOriginFetch('/web/v1/collector/capabilities').then(async response => { if (!response.ok) throw await failure(response); return await response.json() as Capabilities }), request<Vault[]>('/vaults')])
+      const [caps, vaults] = await Promise.all([apiOriginFetch('/web/v2/collector/capabilities').then(async response => { if (!response.ok) throw await failure(response); return await response.json() as Capabilities }), request<Vault[]>('/vaults')])
       setCapabilities(caps)
       setSelected(current => vaults.some(v => v.vaultId === current) ? current : vaults[0]?.vaultId ?? '')
       const next = await Promise.all(vaults.map(async vault => {
@@ -60,7 +60,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
       }
     }
     if (!userId) throw new Error('Enter your VRChat user ID; it is not stored in this vault manifest.')
-    const sealed = await collectorSealUnlock({ accountId, vaultId: vault.vaultId, unlockKey: cap.unlockKey, vrchatUserId: userId, authCookie: authCookie.trim(), twoFactorCookie: twoFactorCookie.trim(), expiresAt: forever ? null : Date.now() + expiryDays * 24 * 60 * 60 * 1000, intervalSeconds })
+    const sealed = await collectorSealUnlock({ accountId, vaultId: vault.vaultId, unlockKey: cap.unlockKey, vrchatUserId: userId, authCookie: authCookie.trim(), twoFactorCookie: twoFactorCookie.trim(), expiresAt: forever ? null : Math.floor(Date.now() / 1000) + expiryDays * 24 * 60 * 60, intervalSeconds })
     const response = await apiFetch(`/vaults/${encodeURIComponent(vault.vaultId)}/collector/unlock`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: decode(sealed.sealed).buffer as ArrayBuffer })
     if (!response.ok) throw await failure(response)
     setAuthCookie(''); setTwoFactorCookie(''); await refresh()
@@ -74,7 +74,7 @@ export function CollectorPage({ accountId, allowed, unlocked, act }: { accountId
       {loadError && <div className="alert error">{loadError}</div>}
       <p>Service: <strong>{capabilities?.available ? 'Available' : capabilities ? 'Unavailable' : 'Checking'}</strong>{capabilities?.available === false && <span className="muted"> · Collector runtime is not ready on this server.</span>}</p>
       {rows.length === 0 && !loading ? <p className="muted">No vaults are available. Create or pair a vault first.</p> : <div className="envelope-list">{rows.map(({ vault, status, error }) => <article className="card" key={vault.vaultId}><div className="section-heading"><div><b>Vault {vault.vaultId}</b><small>{formatBytes(vault.usageBytes)} · {vault.maxSeq} history records</small></div><span className={`pill ${status?.state ?? 'unknown'}`}>{status?.state ?? (error ? 'Unavailable' : 'Unknown')}</span></div>
-        <p className="muted">Last upload: {when(status?.lastChunkAtMs)}{status?.lastError ? ` · ${status.lastError}` : error ? ` · ${error}` : ''}</p>
+        <p className="muted">Last upload: {when(status?.lastChunkAt)}{status?.lastError ? ` · ${status.lastError}` : error ? ` · ${error}` : ''}</p>
         {status?.state === 'running' ? <button className="danger" onClick={() => lock(vault)}>Lock collector</button> : <button onClick={() => setSelected(vault.vaultId)}>Configure session</button>}
       </article>)}</div>}
     </article>

@@ -1,11 +1,12 @@
+import { rowTime } from './timestamps'
 import React, { useEffect, useMemo, useState } from 'react'
 import { Activity, ChevronDown, Clock3 } from 'lucide-react'
 import { request, requestBinary } from './api'
 import { verifyAndOpenBatch, verifyAndOpenLive } from './protocol'
 import { clearHistoryCache, readHistoryCache, writeHistoryCache } from './historyCache'
 
-type VaultInfo = { vaultId: string; maxSeq: number; manifestSeq: number; usageBytes: number; createdAtMs: number }
-type OpenChunk = { header: { chunkId: string; sourceSeq: number; kind: string; createdAtMs: number }; body: { streams: Record<string, unknown[]> } }
+type VaultInfo = { vaultId: string; maxSeq: number; manifestSeq: number; usageBytes: number; createdAt: number }
+type OpenChunk = { header: { chunkId: string; sourceSeq: number; kind: string; createdAt: number }; body: { streams: Record<string, unknown[]> } }
 type HistoryView = 'all' | 'feed' | 'friends' | 'notifications' | 'moderation' | 'gamelog' | 'profile' | 'graph'
 
 const historyViews: { id: HistoryView; label: string }[] = [
@@ -129,15 +130,15 @@ export function HistoryBrowser({ unlocked, accountId }: { unlocked: boolean; acc
   }
 
   const streams = [...new Set(chunks.flatMap(chunk => Object.keys(chunk.body.streams)))].sort()
-  const fromMs = fromDate ? localDateBoundary(fromDate) : null
-  const untilMs = throughDate ? localDateBoundary(throughDate, true) : null
-  const rows = useMemo(() => chunks.flatMap(chunk => Object.entries(chunk.body.streams).flatMap(([stream, values]) => values.map((value, index) => ({ chunk, stream, value, index, time: rowTime(value, chunk.header.createdAtMs) }))))
+  const from = fromDate ? localDateBoundary(fromDate) : null
+  const until = throughDate ? localDateBoundary(throughDate, true) : null
+  const rows = useMemo(() => chunks.flatMap(chunk => Object.entries(chunk.body.streams).flatMap(([stream, values]) => values.map((value, index) => ({ chunk, stream, value, index, time: rowTime(value, chunk.header.createdAt) }))))
     .filter(row => view === 'all' || viewForStream(row.stream) === view)
     .filter(row => !streamFilter || row.stream === streamFilter)
     .filter(row => !query.trim() || `${row.stream} ${JSON.stringify(row.value)}`.toLowerCase().includes(query.trim().toLowerCase()))
-    .filter(row => fromMs === null || row.time >= fromMs)
-    .filter(row => untilMs === null || row.time < untilMs)
-    .sort((a, b) => b.time - a.time), [chunks, query, streamFilter, view, fromMs, untilMs])
+    .filter(row => from === null || row.time >= from)
+    .filter(row => until === null || row.time < until)
+    .sort((a, b) => b.time - a.time), [chunks, query, streamFilter, view, from, until])
 
   const summaries = useMemo(() => {
     const counts = new Map<string, number>()
@@ -162,13 +163,13 @@ export function HistoryBrowser({ unlocked, accountId }: { unlocked: boolean; acc
       {vaults.length>0&&<div className="history-controls"><label>Vault<select value={vaultId} onChange={event => {const selected=vaults.find(vault=>vault.vaultId===event.target.value);setVaultId(event.target.value);setManifest(null);setChunks([]);setBefore(selected?selected.maxSeq+1:0);setHasMore(false)}}>{vaults.map(vault => <option key={vault.vaultId} value={vault.vaultId}>{vault.vaultId} · {vault.maxSeq} chunks</option>)}</select></label><button disabled={!vaultId||busy} onClick={openNext}>{busy?'Verifying...':chunks.length?'Load earlier history':'Verify and open recent history'}</button><button disabled={busy} onClick={async()=>{await clearHistoryCache(accountId);setError('');setNotice('Local encrypted history cache cleared.')}}>Clear local cache</button></div>}
       {vaults.length>0&&vaultId&&<LivePanel vaultId={vaultId} accountId={accountId}/>}
       {!vaults.length && !error && <div className="empty-state">No synced vaults were found for this account.</div>}
-      {chunks.length > 0 && <><p className="muted">Verified {chunks.length} chunks · {summaries.total} rows · {summaries.worlds} locations · {summaries.people} people</p><div className="history-view-tabs" role="tablist" aria-label="History views">{historyViews.map(item=><button key={item.id} role="tab" aria-selected={view===item.id} className={view===item.id?'selected':''} onClick={()=>{setView(item.id);setStreamFilter('')}}>{item.label}</button>)}</div>{view==='all'&&<div className="history-summary-grid">{[...summaries.counts].sort(([a],[b])=>a.localeCompare(b)).map(([stream,count])=><button key={stream} className="history-summary-card" onClick={()=>{setView(viewForStream(stream));setStreamFilter(stream)}}><strong>{count}</strong><span>{stream.replaceAll('_',' ')}</span></button>)}</div>}<div className="history-filters"><label>Search loaded rows<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search names, locations, or text"/></label><label>Stream<select value={streamFilter} onChange={event=>setStreamFilter(event.target.value)}><option value="">All streams</option>{streams.filter(stream=>view==='all'||viewForStream(stream)===view).map(stream=><option key={stream}>{stream}</option>)}</select></label><label>From<input type="date" value={fromDate} onChange={event=>setFromDate(event.target.value)}/></label><label>Through<input type="date" value={throughDate} onChange={event=>setThroughDate(event.target.value)}/></label></div>{detailEntity&&<section className="entity-detail"><div className="section-heading"><div><h3>{detailEntity.kind} details</h3><p className="muted">{detailEntity.id} · {relatedRows.length} related verified records loaded</p></div><button onClick={()=>setDetailEntity(null)}>Close</button></div>{relatedRows.length?relatedRows.map((item,index)=><article key={`${item.stream}-${index}`}><strong>{item.stream.replaceAll('_',' ')}</strong><RecordDetails value={item.value} onSelect={setDetailEntity}/></article>):<p className="muted">No related records in the loaded history pages.</p>}</section>}{view==='graph'&&<MutualGraph rows={rows.map(row=>row.value)}/ >}{rows.length ? <div className="activity-timeline">{rows.map((row, index)=><article className="activity-entry" key={`${row.chunk.header.chunkId}-${row.stream}-${row.index}-${index}`}><div className="activity-entry-meta"><span>{historyViews.find(item=>item.id===viewForStream(row.stream))?.label} · {row.stream}</span><time><Clock3 size={13}/>{new Date(row.time).toLocaleString()}</time></div><ActivityRow stream={row.stream} value={row.value}/><details><summary><ChevronDown size={14}/>Record details</summary><RecordDetails value={row.value} onSelect={setDetailEntity}/></details></article>)}</div> : <div className="empty-state">No loaded events match these filters.</div>}</>}
+      {chunks.length > 0 && <><p className="muted">Verified {chunks.length} chunks · {summaries.total} rows · {summaries.worlds} locations · {summaries.people} people</p><div className="history-view-tabs" role="tablist" aria-label="History views">{historyViews.map(item=><button key={item.id} role="tab" aria-selected={view===item.id} className={view===item.id?'selected':''} onClick={()=>{setView(item.id);setStreamFilter('')}}>{item.label}</button>)}</div>{view==='all'&&<div className="history-summary-grid">{[...summaries.counts].sort(([a],[b])=>a.localeCompare(b)).map(([stream,count])=><button key={stream} className="history-summary-card" onClick={()=>{setView(viewForStream(stream));setStreamFilter(stream)}}><strong>{count}</strong><span>{stream.replaceAll('_',' ')}</span></button>)}</div>}<div className="history-filters"><label>Search loaded rows<input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Search names, locations, or text"/></label><label>Stream<select value={streamFilter} onChange={event=>setStreamFilter(event.target.value)}><option value="">All streams</option>{streams.filter(stream=>view==='all'||viewForStream(stream)===view).map(stream=><option key={stream}>{stream}</option>)}</select></label><label>From<input type="date" value={fromDate} onChange={event=>setFromDate(event.target.value)}/></label><label>Through<input type="date" value={throughDate} onChange={event=>setThroughDate(event.target.value)}/></label></div>{detailEntity&&<section className="entity-detail"><div className="section-heading"><div><h3>{detailEntity.kind} details</h3><p className="muted">{detailEntity.id} · {relatedRows.length} related verified records loaded</p></div><button onClick={()=>setDetailEntity(null)}>Close</button></div>{relatedRows.length?relatedRows.map((item,index)=><article key={`${item.stream}-${index}`}><strong>{item.stream.replaceAll('_',' ')}</strong><RecordDetails value={item.value} onSelect={setDetailEntity}/></article>):<p className="muted">No related records in the loaded history pages.</p>}</section>}{view==='graph'&&<MutualGraph rows={rows.map(row=>row.value)}/ >}{rows.length ? <div className="activity-timeline">{rows.map((row, index)=><article className="activity-entry" key={`${row.chunk.header.chunkId}-${row.stream}-${row.index}-${index}`}><div className="activity-entry-meta"><span>{historyViews.find(item=>item.id===viewForStream(row.stream))?.label} · {row.stream}</span><time><Clock3 size={13}/>{new Date(row.time * 1000).toLocaleString()}</time></div><ActivityRow stream={row.stream} value={row.value}/><details><summary><ChevronDown size={14}/>Record details</summary><RecordDetails value={row.value} onSelect={setDetailEntity}/></details></article>)}</div> : <div className="empty-state">No loaded events match these filters.</div>}</>}
       {hasMore&&<button disabled={busy} onClick={openNext}>Load earlier history</button>}
     </>}
   </section>
 }
 
-type LiveData = { own: { status: string; statusDescription: string; location: string }; friends: { userId: string; displayName: string; status: string; statusDescription: string; location: string; platform: string; lastSeenAtMs: number }[]; instances: { location: string; occupants: string[]; capacity?: number | null }[]; createdAtMs: number }
+type LiveData = { own: { status: string; statusDescription: string; location: string }; friends: { userId: string; displayName: string; status: string; statusDescription: string; location: string; platform: string; lastSeenAt: number }[]; instances: { location: string; occupants: string[]; capacity?: number | null }[]; createdAt: number }
 
 function LivePanel({ vaultId, accountId }: { vaultId: string; accountId: string }) {
   const [live, setLive] = useState<LiveData | null>(null)
@@ -207,33 +208,17 @@ function LivePanel({ vaultId, accountId }: { vaultId: string; accountId: string 
   return <section className="live-panel" aria-live="polite"><div className="section-heading"><div><h3>Live presence</h3><p className="muted">Decrypted and signature-checked in this browser · refreshes every 30 seconds</p></div>{live&&<span className="live-age">Updated {age}s ago</span>}</div>{message&&<p className="muted">{message}</p>}{live&&<><div className="live-own"><strong>You</strong><span>{live.own.status||'Unknown status'}{live.own.statusDescription?` · ${live.own.statusDescription}`:''}</span><span>{live.own.location||'Not in an instance'}</span></div><h4>Friends online ({live.friends.length})</h4>{live.friends.length===0?<p className="muted">No friend presence was included in this snapshot.</p>:<div className="live-friends">{live.friends.map(friend=><article key={friend.userId}><strong>{friend.displayName||friend.userId}</strong><span>{friend.status}{friend.statusDescription?` · ${friend.statusDescription}`:''}</span><small>{friend.location||'Offline'}{friend.platform?` · ${friend.platform}`:''}</small></article>)}</div>}{live.instances.length>0&&<><h4>Shared instances</h4><div className="live-friends">{live.instances.map(instance=><article key={instance.location}><strong>{instance.location}</strong><span>{instance.occupants.length}{instance.capacity?` / ${instance.capacity}`:''} occupants</span><small>{instance.occupants.join(', ')}</small></article>)}</div></>}</>}</section>
 }
 
-function rowTime(value: unknown, fallback: number) {
-  if (!value || typeof value !== 'object') return fallback
-  const row = value as Record<string, unknown>
-  for (const key of ['timestampMs', 'createdAtMs', 'occurredAtMs', 'timeMs', 'dateMs']) {
-    const candidate = row[key]
-    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate
-  }
-  for (const key of ['timestamp', 'createdAt', 'occurredAt', 'time', 'date']) {
-    const candidate = row[key]
-    if (typeof candidate === 'string' || typeof candidate === 'number') {
-      const parsed = new Date(candidate).getTime()
-      if (Number.isFinite(parsed)) return parsed
-    }
-  }
-  return fallback
-}
-
 function localDateBoundary(value: string, nextDay = false) {
   const date = new Date(`${value}T00:00:00`)
   if (nextDay) date.setDate(date.getDate() + 1)
-  return date.getTime()
+  return Math.floor(date.getTime() / 1000)
 }
 
 function ActivityRow({ stream, value }: { stream: string; value: unknown }) {
   if (!value || typeof value !== 'object') return <p className="activity-entry-summary">{String(value)}</p>
   const row = value as Record<string, unknown>
-  const date = String(row.created_at ?? row.createdAt ?? row.created_at_ms ?? '')
+  const timestamp = rowTime(row, Number.NaN)
+  const date = Number.isFinite(timestamp) ? new Date(timestamp * 1000).toLocaleString() : ''
   if (stream === 'feed_status') return <div className="activity-entry-summary"><strong>Status changed{row.status ? ` to ${row.status}` : ''}</strong><p>{String(row.status_description ?? row.statusDescription ?? 'No status description')}</p></div>
   if (stream === 'feed_gps') return <div className="activity-entry-summary"><strong>Location changed</strong><p>{String(row.location ?? row.world_name ?? row.worldName ?? 'Unknown location')}{row.world_id || row.worldId ? ` · ${row.world_id ?? row.worldId}` : ''}</p></div>
   if (stream === 'feed_bio' || stream === 'profile_bio') return <div className="activity-entry-summary"><strong>Bio updated</strong><p>{String(row.bio ?? row.description ?? 'Bio content unavailable')}</p></div>
