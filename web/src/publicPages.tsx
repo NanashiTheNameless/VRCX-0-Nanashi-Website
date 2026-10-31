@@ -59,7 +59,7 @@ export function Themes() {
       <header className="public-header">
         <div className="eyebrow">COMMUNITY</div>
         <h1>Themes</h1>
-        <p className="muted">Community themes for VRCX-0-Nanashi. This page loads the catalog and previews directly from GitHub, so GitHub sees those requests. Nothing is counted or reported here. Install a theme in the app under Settings, Interface, Themes.</p>
+        <p className="muted">Community themes for VRCX-0-Nanashi (and VRCX-0). This page loads the catalog and previews directly from GitHub, so GitHub sees those requests. Nothing is counted or reported here. Install a theme in the app under Settings, Interface, Themes.</p>
         <div className="button-row">
           <input type="search" aria-label="Search themes" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search themes" />
           <ImagesToggle />
