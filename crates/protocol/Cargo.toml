@@ -17,7 +17,7 @@ ed25519-dalek = { version = "3.0.0", features = ["zeroize", "rand_core"] }
 getrandom = "0.4.3"
 hkdf = "0.13.0"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
-hpke = { version = "0.14.1", default-features = false, features = ["x25519", "chacha", "alloc", "getrandom"] }
+hpke = { version = "0.15.1", default-features = false, features = ["x25519", "chacha", "alloc", "getrandom"] }
 ruzstd = "0.9.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_bytes = "0.11.19"
