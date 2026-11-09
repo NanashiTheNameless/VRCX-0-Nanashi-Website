@@ -1649,6 +1649,8 @@ mod tests {
         assert!(!settings.allows(&row("self_profile_log", "unknown")));
     }
 
+    type ChoiceOf = fn(&mut ProfileHistorySettings) -> &mut ProfileHistoryChoice;
+
     #[test]
     fn each_new_profile_field_follows_its_own_sync_choice() {
         let row = |stream: &str| ChildRow {
@@ -1657,10 +1659,7 @@ mod tests {
             stream: stream.into(),
             row: serde_json::json!({}),
         };
-        let fields: [(
-            &str,
-            fn(&mut ProfileHistorySettings) -> &mut ProfileHistoryChoice,
-        ); 8] = [
+        let fields: [(&str, ChoiceOf); 8] = [
             ("profile_history_display_name", |s| &mut s.display_name),
             ("profile_history_bio_links", |s| &mut s.bio_links),
             ("profile_history_profile_pictures", |s| {

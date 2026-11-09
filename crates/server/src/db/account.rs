@@ -153,7 +153,7 @@ impl CollectorProfileHistory {
                 settings.len() == fields.len()
                     && fields.iter().all(|field| {
                         settings
-                            .get(field)
+                            .get(*field)
                             .and_then(serde_json::Value::as_object)
                             .is_some_and(|choice| {
                                 choice.len() == 2
