@@ -113,6 +113,10 @@ pub fn api_router(state: Shared) -> Router {
 pub fn collector_router(state: Shared) -> Router {
     Router::new()
         .route(
+            "/profile-history/{account_id}/{vault_id}",
+            axum::routing::get(v1::collector_profile_history_get),
+        )
+        .route(
             "/live/{account_id}/{vault_id}",
             axum::routing::put(v1::publish_live).delete(v1::delete_live),
         )

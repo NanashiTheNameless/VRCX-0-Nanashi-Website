@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use vrcx_0_nanashi_website_protocol::ids::{AccountId, ChunkId, VaultId};
 
 use super::{DbError, migrate, open_encrypted, remove_files};
@@ -49,6 +50,12 @@ ALTER TABLE envelopes RENAME COLUMN created_at_ms TO created_at;
 UPDATE envelopes SET created_at = created_at / 1000 - CASE WHEN created_at < 0 AND created_at % 1000 != 0 THEN 1 ELSE 0 END;
 ALTER TABLE collections RENAME COLUMN updated_at_ms TO updated_at;
 UPDATE collections SET updated_at = updated_at / 1000 - CASE WHEN updated_at < 0 AND updated_at % 1000 != 0 THEN 1 ELSE 0 END;
+"#,
+    r#"
+CREATE TABLE collector_profile_history (
+    vault_id TEXT PRIMARY KEY REFERENCES vaults ON DELETE CASCADE,
+    body TEXT NOT NULL
+);
 "#,
 ];
 
@@ -101,6 +108,65 @@ pub struct VaultRow {
     pub max_seq: u64,
     pub manifest_seq: u64,
     pub usage_bytes: u64,
+}
+
+/// Collector preferences are separate from encrypted history and Settings Sync.
+/// Only boolean choices and the publishing device's ordering metadata belong here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollectorProfileHistory {
+    pub version: u8,
+    pub primary_device_key_id: String,
+    pub manifest_seq: u64,
+    pub settings_revision: u64,
+    pub settings: serde_json::Value,
+}
+
+const PROFILE_HISTORY_FIELDS_V1: &[&str] = &["status", "bio", "pronouns"];
+const PROFILE_HISTORY_FIELDS_V2: &[&str] = &[
+    "status",
+    "bio",
+    "pronouns",
+    "displayName",
+    "bioLinks",
+    "profilePictures",
+    "profileDecorations",
+    "badges",
+    "tags",
+    "ageVerification",
+    "avatarCloning",
+];
+
+impl CollectorProfileHistory {
+    pub fn valid(&self) -> bool {
+        let fields = match self.version {
+            1 => PROFILE_HISTORY_FIELDS_V1,
+            2 => PROFILE_HISTORY_FIELDS_V2,
+            _ => return false,
+        };
+        !self.primary_device_key_id.is_empty()
+            && self.primary_device_key_id.len() <= 128
+            && self.manifest_seq > 0
+            && self.manifest_seq <= i64::MAX as u64
+            && self.settings_revision <= i64::MAX as u64
+            && self.settings.as_object().is_some_and(|settings| {
+                settings.len() == fields.len()
+                    && fields.iter().all(|field| {
+                        settings
+                            .get(field)
+                            .and_then(serde_json::Value::as_object)
+                            .is_some_and(|choice| {
+                                choice.len() == 2
+                                    && choice
+                                        .get("recording")
+                                        .is_some_and(serde_json::Value::is_boolean)
+                                    && choice
+                                        .get("sync")
+                                        .is_some_and(serde_json::Value::is_boolean)
+                            })
+                    })
+            })
+    }
 }
 
 pub type ObjectId = [u8; 16];
@@ -177,7 +243,8 @@ impl AccountStore {
             "SELECT (SELECT COALESCE(SUM(size), 0) FROM chunks)
                   + (SELECT COALESCE(SUM(length(manifest)), 0) FROM vaults)
                   + (SELECT COALESCE(SUM(size), 0) FROM envelopes)
-                  + (SELECT COALESCE(SUM(size), 0) FROM collections)",
+                  + (SELECT COALESCE(SUM(size), 0) FROM collections)
+                  + (SELECT COALESCE(SUM(length(body)), 0) FROM collector_profile_history)",
             [],
             |row| row.get(0),
         )?;
@@ -391,6 +458,7 @@ impl AccountStore {
             "SELECT v.vault_id, v.vault_pk, v.manifest_pk, v.created_at, v.max_seq, v.manifest_seq,
                     COALESCE((SELECT SUM(size) FROM chunks c WHERE c.vault_id = v.vault_id), 0)
                       + COALESCE(length(v.manifest), 0)
+                      + COALESCE((SELECT length(body) FROM collector_profile_history p WHERE p.vault_id = v.vault_id), 0)
              FROM vaults v ORDER BY v.created_at",
         )?;
         let rows = statement.query_map([], |row| {
@@ -461,6 +529,76 @@ impl AccountStore {
                 |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?)),
             )
             .optional()?)
+    }
+
+    pub fn collector_profile_history(
+        &self,
+        vault_id: &VaultId,
+    ) -> StoreResult<Option<CollectorProfileHistory>> {
+        Self::require_vault(&self.conn, vault_id)?;
+        let body: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT body FROM collector_profile_history WHERE vault_id = ?1",
+                [vault_key(vault_id)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        body.map(|body| {
+            serde_json::from_str(&body)
+                .map_err(|_| StoreError::Invalid("invalid collector preferences"))
+        })
+        .transpose()
+    }
+
+    pub fn collector_profile_history_set(
+        &mut self,
+        vault_id: &VaultId,
+        next: &CollectorProfileHistory,
+    ) -> StoreResult<()> {
+        if !next.valid() {
+            return Err(StoreError::Invalid("invalid collector preferences"));
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx
+            .query_row(
+                "SELECT manifest_seq FROM vaults WHERE vault_id = ?1",
+                [vault_key(vault_id)],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::VaultNotFound)?;
+        if current as u64 != next.manifest_seq {
+            return Err(StoreError::ManifestConflict);
+        }
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT body FROM collector_profile_history WHERE vault_id = ?1",
+                [vault_key(vault_id)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(previous) = &previous {
+            let previous: CollectorProfileHistory = serde_json::from_str(previous)
+                .map_err(|_| StoreError::Invalid("invalid collector preferences"))?;
+            if previous.manifest_seq > next.manifest_seq
+                || (previous.manifest_seq == next.manifest_seq
+                    && (previous.primary_device_key_id != next.primary_device_key_id
+                        || previous.settings_revision > next.settings_revision
+                        || (previous.settings_revision == next.settings_revision
+                            && previous.settings != next.settings)))
+            {
+                return Err(StoreError::ManifestConflict);
+            }
+        }
+        let body = serde_json::to_string(next)
+            .map_err(|_| StoreError::Invalid("invalid collector preferences"))?;
+        // One bounded preference record per vault: allow opting out even at quota.
+        tx.execute("INSERT INTO collector_profile_history (vault_id, body) VALUES (?1, ?2) ON CONFLICT(vault_id) DO UPDATE SET body = excluded.body", params![vault_key(vault_id), body])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn put_manifest(
@@ -851,6 +989,106 @@ mod tests {
             },
             limits,
         )
+    }
+
+    #[test]
+    fn collector_preferences_accept_both_field_sets_and_nothing_else() {
+        let choice = serde_json::json!({"recording": false, "sync": true});
+        let settings = |fields: &[&str]| {
+            serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|field| (field.to_string(), choice.clone()))
+                    .collect(),
+            )
+        };
+        let preferences = |version, settings| CollectorProfileHistory {
+            version,
+            primary_device_key_id: "primary".into(),
+            manifest_seq: 1,
+            settings_revision: 1,
+            settings,
+        };
+        assert!(preferences(1, settings(PROFILE_HISTORY_FIELDS_V1)).valid());
+        assert!(preferences(2, settings(PROFILE_HISTORY_FIELDS_V2)).valid());
+        assert!(!preferences(1, settings(PROFILE_HISTORY_FIELDS_V2)).valid());
+        assert!(!preferences(2, settings(PROFILE_HISTORY_FIELDS_V1)).valid());
+        assert!(!preferences(3, settings(PROFILE_HISTORY_FIELDS_V2)).valid());
+        let mut unknown = settings(PROFILE_HISTORY_FIELDS_V2);
+        unknown["badges"]["extra"] = serde_json::json!(true);
+        assert!(!preferences(2, unknown).valid());
+    }
+
+    #[test]
+    fn collector_preferences_are_per_vault_persistent_and_ordered() {
+        let (dir, account, mut store) = store();
+        let first = vault(&mut store);
+        let other = vault(&mut store);
+        assert!(store.collector_profile_history(&first).unwrap().is_none());
+        store.put_manifest(&first, 1, b"manifest", OPEN).unwrap();
+        let mut next = CollectorProfileHistory {
+            version: 1,
+            primary_device_key_id: "primary-a".into(),
+            manifest_seq: 1,
+            settings_revision: 1,
+            settings: serde_json::json!({"status":{"recording":true,"sync":false},"bio":{"recording":false,"sync":true},"pronouns":{"recording":true,"sync":true}}),
+        };
+        store.collector_profile_history_set(&first, &next).unwrap();
+        store.collector_profile_history_set(&first, &next).unwrap();
+        assert!(store.collector_profile_history(&other).unwrap().is_none());
+        let mut stale = next.clone();
+        stale.settings_revision = 0;
+        assert!(matches!(
+            store.collector_profile_history_set(&first, &stale),
+            Err(StoreError::ManifestConflict)
+        ));
+        stale = next.clone();
+        stale.settings["status"]["sync"] = serde_json::json!(true);
+        assert!(matches!(
+            store.collector_profile_history_set(&first, &stale),
+            Err(StoreError::ManifestConflict)
+        ));
+        stale = next.clone();
+        stale.primary_device_key_id = "primary-b".into();
+        assert!(matches!(
+            store.collector_profile_history_set(&first, &stale),
+            Err(StoreError::ManifestConflict)
+        ));
+        store.put_manifest(&first, 2, b"new primary", OPEN).unwrap();
+        assert!(matches!(
+            store.collector_profile_history_set(&first, &next),
+            Err(StoreError::ManifestConflict)
+        ));
+        next.primary_device_key_id = "primary-b".into();
+        next.manifest_seq = 2;
+        next.settings_revision = 0;
+        store.collector_profile_history_set(&first, &next).unwrap();
+        drop(store);
+        let mut store = AccountStore::open(dir.path(), &account, &[4; 32]).unwrap();
+        assert_eq!(store.collector_profile_history(&first).unwrap(), Some(next));
+        store.delete_vault(&first).unwrap();
+        assert!(matches!(
+            store.collector_profile_history(&first),
+            Err(StoreError::VaultNotFound)
+        ));
+        assert!(store.collector_profile_history(&other).unwrap().is_none());
+    }
+
+    #[test]
+    fn collector_preferences_accept_only_individual_boolean_choices() {
+        let mut request = CollectorProfileHistory {
+            version: 1,
+            primary_device_key_id: "primary".into(),
+            manifest_seq: 1,
+            settings_revision: 0,
+            settings: serde_json::json!({"status":{"recording":false,"sync":true},"bio":{"recording":false,"sync":true},"pronouns":{"recording":false,"sync":true}}),
+        };
+        assert!(request.valid());
+        request.settings["pronouns"]["sync"] = serde_json::json!("true");
+        assert!(!request.valid());
+        request.settings["pronouns"]["sync"] = serde_json::json!(true);
+        request.settings["auth"] = serde_json::json!("never store credentials here");
+        assert!(!request.valid());
     }
 
     #[test]

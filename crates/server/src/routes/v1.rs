@@ -20,7 +20,9 @@ use vrcx_0_nanashi_website_protocol::token::{self, TokenKind};
 use vrcx_0_nanashi_website_protocol::transfer;
 
 use crate::auth::{ApiAuth, ClientOrigin, TOKEN_HMAC_PURPOSE};
-use crate::db::account::{AccountStore, ChunkCheck, ChunkPage, NewChunk, ObjectId};
+use crate::db::account::{
+    AccountStore, ChunkCheck, ChunkPage, CollectorProfileHistory, NewChunk, ObjectId,
+};
 use crate::db::registry::{AccountRow, AccountState, NewToken, TokenRow};
 use crate::http::{ApiErr, ApiResult};
 use crate::rate;
@@ -83,6 +85,10 @@ pub fn shared_routes() -> Router<Shared> {
             post(collector_unlock),
         )
         .route("/vaults/{vault_id}/collector/lock", post(collector_lock))
+        .route(
+            "/vaults/{vault_id}/collector/profile-history",
+            post(collector_profile_history_set),
+        )
         .route("/transfer", post(transfer_create))
         .route(
             "/transfer/{transfer_id}",
@@ -1320,6 +1326,57 @@ fn require_collector(auth: &ApiAuth) -> ApiResult<()> {
         ));
     }
     Ok(())
+}
+
+async fn collector_profile_history_set(
+    State(state): State<Shared>,
+    auth: ApiAuth,
+    Path(vault_id): Path<String>,
+    Json(request): Json<CollectorProfileHistory>,
+) -> ApiResult<StatusCode> {
+    require_collector(&auth)?;
+    let vault_id = parse_vault(&vault_id)?;
+    if !request.valid() {
+        return Err(ApiErr::bad_request(
+            "Invalid collector profile history settings.",
+        ));
+    }
+    state
+        .run(move |state| {
+            let mut store = state.open_store(&auth.account)?;
+            store.collector_profile_history_set(&vault_id, &request)?;
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// Internal supervisor endpoint; never accepts a browser or paired-device token.
+pub(crate) async fn collector_profile_history_get(
+    State(state): State<Shared>,
+    Path((account_id, vault_id)): Path<(String, String)>,
+) -> ApiResult<Json<Option<CollectorProfileHistory>>> {
+    let account_id: AccountId = account_id
+        .parse()
+        .map_err(|_| ApiErr::bad_request("Invalid account id."))?;
+    let vault_id = parse_vault(&vault_id)?;
+    state
+        .run(move |state| {
+            let account = state
+                .registry()
+                .account(&account_id)?
+                .ok_or_else(|| ApiErr::not_found(codes::VAULT_NOT_FOUND, "Account not found."))?;
+            if account.state != AccountState::Active
+                || !account.sync_allowed
+                || !account.collector_allowed
+            {
+                return Err(ApiErr::feature_disabled(
+                    "Collector is disabled for this account.",
+                ));
+            }
+            let store = state.open_store(&account)?;
+            Ok(Json(store.collector_profile_history(&vault_id)?))
+        })
+        .await
 }
 
 async fn collector_status(

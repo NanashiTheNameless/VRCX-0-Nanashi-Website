@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     ffi::CString,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::{
@@ -172,11 +172,83 @@ struct Supervisor {
 
 struct FlushBatch {
     rows: Vec<ChildRow>,
-    pending: Option<(u64, String, Vec<u8>, u64)>,
+    pending: Option<PendingRows>,
+    profile_history: ProfileHistorySettings,
     source_seq: u64,
     last_seen_row_id: u64,
     dropped_rows: u64,
     control_id: u64,
+}
+
+struct PendingRows {
+    row_ids: BTreeSet<u64>,
+    chunk_id: String,
+    blob: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProfileHistoryChoice {
+    recording: bool,
+    sync: bool,
+}
+
+impl Default for ProfileHistoryChoice {
+    fn default() -> Self {
+        Self {
+            recording: false,
+            sync: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct ProfileHistorySettings {
+    status: ProfileHistoryChoice,
+    bio: ProfileHistoryChoice,
+    pronouns: ProfileHistoryChoice,
+    display_name: ProfileHistoryChoice,
+    bio_links: ProfileHistoryChoice,
+    profile_pictures: ProfileHistoryChoice,
+    profile_decorations: ProfileHistoryChoice,
+    badges: ProfileHistoryChoice,
+    tags: ProfileHistoryChoice,
+    age_verification: ProfileHistoryChoice,
+    avatar_cloning: ProfileHistoryChoice,
+}
+
+impl ProfileHistorySettings {
+    fn allows(&self, row: &ChildRow) -> bool {
+        match row.stream.as_str() {
+            "feed_status" | "self_profile_status" | "profile_history_status" => self.status.sync,
+            "feed_bio" | "profile_bio" | "self_profile_bio" | "profile_history_bio" => {
+                self.bio.sync
+            }
+            "profile_history_pronouns" => self.pronouns.sync,
+            "profile_history_display_name" => self.display_name.sync,
+            "profile_history_bio_links" => self.bio_links.sync,
+            "profile_history_profile_pictures" => self.profile_pictures.sync,
+            "profile_history_profile_decorations" => self.profile_decorations.sync,
+            "profile_history_badges" => self.badges.sync,
+            "profile_history_tags" => self.tags.sync,
+            "profile_history_age_verification" => self.age_verification.sync,
+            "profile_history_avatar_cloning" => self.avatar_cloning.sync,
+            "self_profile_log" => match row.row.get("field").and_then(serde_json::Value::as_str) {
+                Some("status" | "statusDescription") => self.status.sync,
+                Some("bio") => self.bio.sync,
+                _ => false,
+            },
+            _ => true,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectorProfileHistory {
+    version: u8,
+    settings: ProfileHistorySettings,
 }
 
 struct FlushContext<'a> {
@@ -660,6 +732,7 @@ struct SessionFrame<'a> {
     auth: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     two_factor_auth: Option<&'a str>,
+    profile_history_settings: &'a ProfileHistorySettings,
 }
 
 #[derive(Deserialize)]
@@ -724,6 +797,14 @@ async fn control(
     if let Some(row_id) = row_id {
         request["throughRowId"] = serde_json::json!(row_id);
     }
+    control_request(stream, id, request).await
+}
+
+async fn control_request(
+    stream: &mut UnixStream,
+    id: u64,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let bytes = cbor(&request)?;
     write_frame(stream, &bytes)
         .await
@@ -793,12 +874,55 @@ async fn uds_call(
     Ok((status, bytes))
 }
 
+async fn profile_history_settings(
+    supervisor: &Supervisor,
+    account: &str,
+    vault: VaultId,
+) -> Result<ProfileHistorySettings, String> {
+    let (status, body) = uds_call(
+        &supervisor.config,
+        Method::GET,
+        &format!("/profile-history/{account}/{vault}"),
+        Vec::new(),
+        &[],
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(format!("API rejected collector settings ({status})"));
+    }
+    let mirror: Option<CollectorProfileHistory> =
+        serde_json::from_slice(&body).map_err(|_| "invalid collector settings".to_owned())?;
+    match mirror {
+        Some(mirror) if matches!(mirror.version, 1 | 2) => Ok(mirror.settings),
+        Some(_) => Err("unsupported collector settings version".into()),
+        None => Ok(ProfileHistorySettings::default()),
+    }
+}
+
+async fn refresh_profile_history(
+    context: &FlushContext<'_>,
+    batch: &mut FlushBatch,
+    stream: &mut UnixStream,
+) -> Result<(), String> {
+    let next = profile_history_settings(context.supervisor, context.account, context.vault).await?;
+    if next != batch.profile_history {
+        batch.control_id += 1;
+        control_request(stream, batch.control_id, serde_json::json!({
+            "v": 1, "id": batch.control_id, "op": "setProfileHistorySettings", "profileHistorySettings": next,
+        })).await?;
+        batch.profile_history = next;
+    }
+    Ok(())
+}
+
 async fn flush_rows(
     context: &FlushContext<'_>,
     batch: &mut FlushBatch,
     control_stream: &mut UnixStream,
     status: &Arc<Mutex<SessionStatus>>,
 ) -> Result<(), String> {
+    // Refresh before building or retrying a signed upload. Never alter pending signed bytes.
+    refresh_profile_history(context, batch, control_stream).await?;
     let supervisor = context.supervisor;
     let account = context.account;
     let vault = context.vault;
@@ -807,7 +931,6 @@ async fn flush_rows(
     let rows = &mut batch.rows;
     let pending = &mut batch.pending;
     let source_seq = &mut batch.source_seq;
-    let last_seen_row_id = &mut batch.last_seen_row_id;
     let dropped_rows = &mut batch.dropped_rows;
     let control_id = &mut batch.control_id;
     if rows.is_empty() && *dropped_rows == 0 && pending.is_none() {
@@ -815,13 +938,22 @@ async fn flush_rows(
     }
     if pending.is_none() {
         let mut streams = std::collections::BTreeMap::<String, Vec<serde_json::Value>>::new();
-        for row in rows.iter() {
+        let mut selected = BTreeSet::new();
+        for row in rows
+            .iter()
+            .filter(|row| batch.profile_history.allows(row))
+            .take(4_000)
+        {
+            selected.insert(row.row_id);
             if row.v != 1 {
                 return Err("unsupported child row version".into());
             }
             streams.entry(row.stream.clone()).or_default().push(
                 vrcx_0_nanashi_website_protocol::history::normalize_row(&row.stream, &row.row),
             );
+        }
+        if selected.is_empty() && *dropped_rows == 0 {
+            return Ok(());
         }
         let body = ChunkBody { streams };
         let now = now_epoch();
@@ -843,14 +975,25 @@ async fn flush_rows(
         let sealed =
             chunk::seal_chunk(&draft, &supervisor.signer, vault_pk).map_err(|e| e.to_string())?;
         let chunk_id = sealed.chunk_id.to_string();
-        *pending = Some((*last_seen_row_id, chunk_id, sealed.blob, *dropped_rows));
+        *pending = Some(PendingRows {
+            row_ids: selected,
+            chunk_id,
+            blob: sealed.blob,
+        });
     }
-    let (through_row_id, chunk_id, blob, _) = pending.as_ref().expect("pending initialized");
+    let pending_rows = pending.as_ref().expect("pending initialized");
+    if rows
+        .iter()
+        .any(|row| pending_rows.row_ids.contains(&row.row_id) && !batch.profile_history.allows(row))
+    {
+        return Err("A pending collector upload contains profile history whose syncing was turned off. Re-enable that field on the primary device to finish this upload.".into());
+    }
+    let chunk_id = &pending_rows.chunk_id;
     let response = uds_call(
         &supervisor.config,
         Method::PUT,
         &format!("/chunks/{account}/{vault}/{chunk_id}"),
-        blob.clone(),
+        pending_rows.blob.clone(),
         &[],
     )
     .await?;
@@ -858,16 +1001,11 @@ async fn flush_rows(
         return Err(format!("API rejected collector chunk ({})", response.0));
     }
     *control_id += 1;
-    control(
-        control_stream,
-        *control_id,
-        "pruneRows",
-        Some(*through_row_id),
-    )
-    .await?;
-    rows.retain(|row| row.row_id > *through_row_id);
+    control_request(control_stream, *control_id, serde_json::json!({
+        "v": 1, "id": *control_id, "op": "acknowledgeRows", "acknowledgedRowIds": pending_rows.row_ids,
+    })).await?;
+    rows.retain(|row| !pending_rows.row_ids.contains(&row.row_id));
     *source_seq += 1;
-    *last_seen_row_id = rows.last().map_or(0, |row| row.row_id);
     *dropped_rows = 0;
     *pending = None;
     let mut status = status.lock().unwrap_or_else(|p| p.into_inner());
@@ -987,6 +1125,7 @@ async fn run_child_inner(
         data_dir,
         child_uid,
     } = session;
+    let initial_profile_history = profile_history_settings(supervisor, account, *vault).await?;
     let data_dir = data_dir.as_path();
     let (session_parent, session_child) =
         std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
@@ -1029,6 +1168,7 @@ async fn run_child_inner(
         v: 1,
         auth: &payload.cookies.auth,
         two_factor_auth: payload.cookies.two_factor_auth.as_deref(),
+        profile_history_settings: &initial_profile_history,
     })?);
     let expires_at = payload.expires_at;
     let flush = Duration::from_secs(payload.interval_seconds);
@@ -1049,6 +1189,7 @@ async fn run_child_inner(
     let mut batch = FlushBatch {
         rows: Vec::new(),
         pending: None,
+        profile_history: initial_profile_history,
         source_seq: 1,
         last_seen_row_id: 0,
         dropped_rows: 0,
@@ -1102,6 +1243,9 @@ async fn run_child_inner(
                 for row in &batch.rows { buffered_bytes += row.stream.len() + row.row.to_string().len() + 64; }
             }
             _ = live_tick.tick() => {
+                if let Err(error) = refresh_profile_history(&flush_context, &mut batch, &mut control_stream).await {
+                    status.lock().unwrap_or_else(|p| p.into_inner()).last_error = Some(error.chars().take(240).collect());
+                }
                 if let Err(error) = publish_live(supervisor, account, *vault, vault_pk, &mut control_stream, &mut batch.control_id).await {
                     status.lock().unwrap_or_else(|p| p.into_inner()).last_error = Some(error.chars().take(240).collect());
                 }
@@ -1467,6 +1611,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_choices_gate_new_and_legacy_streams_individually() {
+        let mut settings = ProfileHistorySettings::default();
+        assert!(
+            !settings.status.recording && !settings.bio.recording && !settings.pronouns.recording
+        );
+        assert!(settings.status.sync && settings.bio.sync && settings.pronouns.sync);
+        settings.status.sync = false;
+        settings.pronouns.sync = false;
+        let row = |stream: &str, field: &str| ChildRow {
+            v: 1,
+            row_id: 1,
+            stream: stream.into(),
+            row: serde_json::json!({"field":field}),
+        };
+        for stream in [
+            "feed_status",
+            "self_profile_status",
+            "profile_history_status",
+            "profile_history_pronouns",
+        ] {
+            assert!(!settings.allows(&row(stream, "")));
+        }
+        for stream in [
+            "feed_bio",
+            "self_profile_bio",
+            "profile_history_bio",
+            "feed_gps",
+        ] {
+            assert!(settings.allows(&row(stream, "")));
+        }
+        assert!(!settings.allows(&row("self_profile_log", "status")));
+        assert!(!settings.allows(&row("self_profile_log", "statusDescription")));
+        assert!(settings.allows(&row("self_profile_log", "bio")));
+        assert!(!settings.allows(&row("self_profile_log", "unknown")));
+    }
+
+    #[test]
+    fn each_new_profile_field_follows_its_own_sync_choice() {
+        let row = |stream: &str| ChildRow {
+            v: 1,
+            row_id: 1,
+            stream: stream.into(),
+            row: serde_json::json!({}),
+        };
+        let fields: [(
+            &str,
+            fn(&mut ProfileHistorySettings) -> &mut ProfileHistoryChoice,
+        ); 8] = [
+            ("profile_history_display_name", |s| &mut s.display_name),
+            ("profile_history_bio_links", |s| &mut s.bio_links),
+            ("profile_history_profile_pictures", |s| {
+                &mut s.profile_pictures
+            }),
+            ("profile_history_profile_decorations", |s| {
+                &mut s.profile_decorations
+            }),
+            ("profile_history_badges", |s| &mut s.badges),
+            ("profile_history_tags", |s| &mut s.tags),
+            ("profile_history_age_verification", |s| {
+                &mut s.age_verification
+            }),
+            ("profile_history_avatar_cloning", |s| &mut s.avatar_cloning),
+        ];
+        for (stream, choice) in fields {
+            let mut settings = ProfileHistorySettings::default();
+            assert!(settings.allows(&row(stream)));
+            choice(&mut settings).sync = false;
+            assert!(!settings.allows(&row(stream)));
+            for (other, _) in fields.iter().filter(|(other, _)| *other != stream) {
+                assert!(settings.allows(&row(other)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_version_one_copy_keeps_new_fields_at_their_defaults() {
+        let settings: ProfileHistorySettings = serde_json::from_value(serde_json::json!({
+            "status": {"recording": true, "sync": false},
+            "bio": {"recording": false, "sync": true},
+            "pronouns": {"recording": true, "sync": true}
+        }))
+        .unwrap();
+        assert!(settings.status.recording && !settings.status.sync);
+        assert_eq!(settings.badges, ProfileHistoryChoice::default());
+        assert!(!settings.badges.recording && settings.badges.sync);
+        assert!(
+            serde_json::from_value::<ProfileHistorySettings>(serde_json::json!({
+                "unknownField": {"recording": true, "sync": true}
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn unlock_accepts_legacy_dates_and_seconds_without_changing_intervals() {
