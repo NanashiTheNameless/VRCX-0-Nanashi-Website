@@ -35,6 +35,30 @@ pub fn parse_last_modified(value: &str) -> i64 {
     vrcx_0_nanashi_website_protocol::time::parse_epoch_seconds(value).unwrap_or(0)
 }
 
+fn parse_list_response(value: &str) -> BackendResult<(Vec<ListEntry>, Option<String>)> {
+    let parsed =
+        ListObjectsV2::parse_response(value).map_err(|e| BackendError(format!("list: {e}")))?;
+    let objects = parsed
+        .contents
+        .into_iter()
+        .map(|item| {
+            let last_modified = item
+                .last_modified
+                .as_deref()
+                .ok_or_else(|| BackendError("list: object is missing LastModified".into()))?;
+            let size = item
+                .size
+                .ok_or_else(|| BackendError("list: object is missing Size".into()))?;
+            Ok(ListEntry {
+                last_modified: parse_last_modified(last_modified),
+                key: item.key,
+                size,
+            })
+        })
+        .collect::<BackendResult<Vec<_>>>()?;
+    Ok((objects, parsed.next_continuation_token))
+}
+
 impl S3Backend {
     pub fn new(config: &S3Config) -> BackendResult<Self> {
         let style = if config.path_style {
@@ -161,18 +185,7 @@ impl S3Backend {
             .text()
             .await
             .map_err(|e| http_error("list body", e))?;
-        let parsed =
-            ListObjectsV2::parse_response(&text).map_err(|e| BackendError(format!("list: {e}")))?;
-        let objects = parsed
-            .contents
-            .into_iter()
-            .map(|item| ListEntry {
-                last_modified: parse_last_modified(&item.last_modified),
-                key: item.key,
-                size: item.size,
-            })
-            .collect();
-        Ok((objects, parsed.next_continuation_token))
+        parse_list_response(&text)
     }
 
     pub async fn delete_prefix(&self, prefix: &str) -> BackendResult<u64> {
@@ -246,6 +259,41 @@ mod tests {
             1_791_460_800
         );
         assert_eq!(parse_last_modified("garbage"), 0);
+    }
+
+    #[test]
+    fn list_response_preserves_metadata_and_cursor() {
+        let (objects, next) = parse_list_response(
+            r#"<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <IsTruncated>true</IsTruncated>
+                <Contents><Key>v1/test</Key><LastModified>2026-10-08T12:00:00Z</LastModified><Size>42</Size></Contents>
+                <Contents><Key>v1/empty</Key><LastModified>2026-10-08T12:00:00Z</LastModified><Size>0</Size></Contents>
+                <NextContinuationToken>next-page</NextContinuationToken>
+            </ListBucketResult>"#,
+        )
+        .unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].key, "v1/test");
+        assert_eq!(objects[0].last_modified, 1_791_460_800);
+        assert_eq!(objects[0].size, 42);
+        assert_eq!(objects[1].size, 0);
+        assert_eq!(next.as_deref(), Some("next-page"));
+    }
+
+    #[test]
+    fn list_response_requires_object_metadata() {
+        for (metadata, missing) in [
+            ("<Size>42</Size>", "LastModified"),
+            ("<LastModified>2026-10-08T12:00:00Z</LastModified>", "Size"),
+        ] {
+            let xml = format!(
+                r#"<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                    <Contents><Key>v1/test</Key>{metadata}</Contents>
+                </ListBucketResult>"#
+            );
+            let error = parse_list_response(&xml).unwrap_err();
+            assert!(error.0.contains(missing), "{}", error.0);
+        }
     }
 
     #[test]
