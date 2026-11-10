@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod follow;
 pub mod v1;
 pub mod web;
 
@@ -103,7 +104,9 @@ pub fn api_router(state: Shared) -> Router {
         .nest("/web/v2", web::router().layer(website_cors(&state)))
         .nest(
             "/public/v2",
-            collections::public_router().layer(website_cors(&state)),
+            collections::public_router()
+                .merge(follow::public_router())
+                .layer(website_cors(&state)),
         )
         .fallback(api_not_found)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))

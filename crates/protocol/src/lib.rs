@@ -4,6 +4,7 @@ pub mod blob;
 pub mod chunk;
 pub mod envelope;
 pub mod error;
+pub mod follow;
 mod framing;
 pub mod history;
 pub mod ids;

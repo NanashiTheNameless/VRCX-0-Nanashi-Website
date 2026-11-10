@@ -296,6 +296,7 @@ fn is_app_route(path: &str) -> bool {
             | "/reset"
     ) || path.starts_with("/open/")
         || path.starts_with("/c/")
+        || path.starts_with("/f/")
 }
 
 fn content_security_policy(

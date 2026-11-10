@@ -123,6 +123,13 @@ fn process(input: &[u8]) -> Vec<u8> {
         if let Some(op) = value
             .get("op")
             .and_then(serde_json::Value::as_str)
+            .filter(|op| op.starts_with("follow"))
+        {
+            return follow_op(op, &value);
+        }
+        if let Some(op) = value
+            .get("op")
+            .and_then(serde_json::Value::as_str)
             .filter(|op| op.starts_with("transfer"))
         {
             return transfer_op(op, &value);
@@ -275,6 +282,48 @@ fn manifest_op(op: &str, value: serde_json::Value) -> Result<serde_json::Value, 
     }
 }
 
+/// Follow links: `followKeys` derives the content key (and a password
+/// link's auth value) once; `followOpen` opens sealed locations with it.
+fn follow_op(op: &str, value: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use vrcx_0_nanashi_website_protocol::b64;
+    use vrcx_0_nanashi_website_protocol::follow::{self, FollowKeys, LinkKey, PasswordLock};
+
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("missing {name}"))
+    };
+    if op == "followOpen" {
+        let keys = FollowKeys::from_content_key(
+            &b64::decode(field("contentKey")?).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let sealed = b64::decode(field("sealed")?).map_err(|e| e.to_string())?;
+        let location = follow::open(&keys, field("code")?, &sealed).map_err(|e| e.to_string())?;
+        return serde_json::to_value(location).map_err(|e| e.to_string());
+    }
+    if op != "followKeys" {
+        return Err("unsupported operation".into());
+    }
+    let link_key = LinkKey::from_fragment(field("linkKey")?).map_err(|e| e.to_string())?;
+    let lock: Option<PasswordLock> = match value.get("lock") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(lock) => Some(serde_json::from_value(lock.clone()).map_err(|e| e.to_string())?),
+    };
+    let password = value.get("password").and_then(serde_json::Value::as_str);
+    let keys = match (&lock, password) {
+        (Some(lock), Some(password)) => follow::derive_keys(&link_key, Some((password, lock))),
+        (None, _) => follow::derive_keys(&link_key, None),
+        (Some(_), None) => return Err("missing password".into()),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "contentKey": b64::encode(keys.content_key()),
+        "auth": keys.auth.as_ref().map(|auth| b64::encode(auth.as_slice())),
+    }))
+}
+
 fn transfer_op(op: &str, value: &serde_json::Value) -> Result<serde_json::Value, String> {
     use vrcx_0_nanashi_website_protocol::ids::AccountId;
     use vrcx_0_nanashi_website_protocol::seal::{SealPrivateKey, SealPublicKey};
@@ -393,6 +442,46 @@ pub unsafe extern "C" fn rs_free_output(ptr: u32, len: u32) {
                 len as usize,
             )))
         };
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use vrcx_0_nanashi_website_protocol::b64;
+    use vrcx_0_nanashi_website_protocol::follow::{self, FollowLocation, FollowState, LinkKey};
+
+    fn call(value: serde_json::Value) -> serde_json::Value {
+        serde_json::from_slice(&process(&serde_json::to_vec(&value).unwrap())).unwrap()
+    }
+
+    #[test]
+    fn opens_a_public_follow_location_only_with_its_key_and_code() {
+        let link = LinkKey::generate().unwrap();
+        let keys = follow::derive_keys(&link, None).unwrap();
+        let location = FollowLocation {
+            v: follow::VERSION,
+            state: FollowState::Private,
+            updated_at: 5,
+        };
+        let sealed = b64::encode(&follow::seal(&keys, "ABCDE12345", &location).unwrap());
+        let derived =
+            call(serde_json::json!({ "op": "followKeys", "linkKey": link.to_fragment() }));
+        assert!(derived["auth"].is_null());
+        let content_key = derived["contentKey"].as_str().unwrap();
+        let opened = call(serde_json::json!({
+            "op": "followOpen", "contentKey": content_key, "code": "ABCDE12345", "sealed": sealed,
+        }));
+        assert_eq!(opened["state"]["kind"], "private");
+        let wrong_code = call(serde_json::json!({
+            "op": "followOpen", "contentKey": content_key, "code": "OTHER12345", "sealed": sealed,
+        }));
+        assert!(wrong_code["error"].is_string());
+        let needs_password = call(serde_json::json!({
+            "op": "followKeys", "linkKey": link.to_fragment(),
+            "lock": follow::PasswordLock::generate().unwrap(),
+        }));
+        assert!(needs_password["error"].is_string());
     }
 }
 

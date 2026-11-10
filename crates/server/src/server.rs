@@ -40,6 +40,7 @@ pub fn spawn_maintenance(state: Shared) {
                     let now = now_epoch();
                     let registry = state.registry();
                     registry.prune_expired(now)?;
+                    registry.prune_follow_shares(now)?;
                     if run_daily {
                         let removed =
                             registry.prune_client_ips(now - CLIENT_IP_RETENTION_MS / 1000)?;

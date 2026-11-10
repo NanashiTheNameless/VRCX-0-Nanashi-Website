@@ -2373,3 +2373,196 @@ async fn legacy_api_requires_an_upgrade_instead_of_mixing_timestamp_units() {
     assert_eq!(capabilities["protocol"], json!([2]));
     assert_eq!(capabilities["webApi"], json!([2]));
 }
+
+impl Harness {
+    async fn follow_altcha(&self) -> String {
+        let challenge: altcha::Challenge =
+            serde_json::from_value(self.get("/public/v2/follow/challenge", None).await.json())
+                .unwrap();
+        let solution = altcha::solve_challenge(altcha::SolveChallengeOptions::new(&challenge))
+            .unwrap()
+            .expect("ALTCHA challenge has a solution");
+        data_encoding::BASE64.encode(
+            &serde_json::to_vec(&altcha::Payload {
+                challenge,
+                solution,
+            })
+            .unwrap(),
+        )
+    }
+
+    async fn put_follow(&self, code: &str, token: Option<&str>, sealed: &[u8]) -> Reply {
+        self.call(
+            Method::PUT,
+            &format!("/public/v2/follow/{code}"),
+            token,
+            &[("content-type", "application/json")],
+            Body::from(json!({ "sealed": b64::encode(sealed) }).to_string()),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn public_follow_shares_need_the_write_token_and_serve_only_ciphertext() {
+    let h = Harness::new(None);
+    let altcha = h.follow_altcha().await;
+    let created = h
+        .post_json("/public/v2/follow", None, json!({ "altcha": altcha }))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+    let code = created.json()["code"].as_str().unwrap().to_owned();
+    let token = created.json()["writeToken"].as_str().unwrap().to_owned();
+
+    let replay = h
+        .post_json("/public/v2/follow", None, json!({ "altcha": altcha }))
+        .await;
+    assert_eq!(replay.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let empty = h.get(&format!("/public/v2/follow/{code}"), None).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert!(empty.json()["sealed"].is_null());
+
+    assert_eq!(
+        h.put_follow(&code, Some("wrong"), b"\x01sealed")
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.put_follow(&code, None, b"\x01sealed").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.put_follow(&code, Some(&token), b"\x01sealed")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let view = h
+        .get(&format!("/public/v2/follow/{code}"), None)
+        .await
+        .json();
+    assert_eq!(view["sealed"], b64::encode(b"\x01sealed"));
+    assert!(view["password"].is_null());
+
+    let too_large = vec![1_u8; vrcx_0_nanashi_website_protocol::follow::MAX_SEALED_LEN + 1];
+    assert_eq!(
+        h.put_follow(&code, Some(&token), &too_large).await.status,
+        StatusCode::BAD_REQUEST
+    );
+
+    let deleted = h
+        .call(
+            Method::DELETE,
+            &format!("/public/v2/follow/{code}"),
+            Some(&token),
+            &[],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.get(&format!("/public/v2/follow/{code}"), None)
+            .await
+            .code(),
+        "follow_not_found"
+    );
+}
+
+#[tokio::test]
+async fn password_follow_shares_release_ciphertext_only_for_the_right_auth() {
+    let h = Harness::new(None);
+    let lock = vrcx_0_nanashi_website_protocol::follow::PasswordLock::generate().unwrap();
+    let auth = [9_u8; 32];
+    let created = h
+        .post_json(
+            "/public/v2/follow",
+            None,
+            json!({
+                "altcha": h.follow_altcha().await,
+                "password": { "lock": lock, "auth": b64::encode(&auth) },
+            }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+    let code = created.json()["code"].as_str().unwrap().to_owned();
+    let token = created.json()["writeToken"].as_str().unwrap().to_owned();
+    assert_eq!(
+        h.put_follow(&code, Some(&token), b"\x01sealed")
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+
+    let view = h
+        .get(&format!("/public/v2/follow/{code}"), None)
+        .await
+        .json();
+    assert!(
+        view["sealed"].is_null(),
+        "password links never expose ciphertext"
+    );
+    assert_eq!(view["password"]["salt"], json!(b64::encode(&lock.salt)));
+
+    let wrong = h
+        .post_json(
+            &format!("/public/v2/follow/{code}/open"),
+            None,
+            json!({ "auth": b64::encode(&[8_u8; 32]) }),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::FORBIDDEN);
+    let right = h
+        .post_json(
+            &format!("/public/v2/follow/{code}/open"),
+            None,
+            json!({ "auth": b64::encode(&auth) }),
+        )
+        .await;
+    assert_eq!(right.status, StatusCode::OK, "{:?}", right.json());
+    assert_eq!(right.json()["sealed"], b64::encode(b"\x01sealed"));
+}
+
+#[tokio::test]
+async fn follow_shares_reject_weak_password_locks_and_expire() {
+    let h = Harness::new(None);
+    let weak = h
+        .post_json(
+            "/public/v2/follow",
+            None,
+            json!({
+                "altcha": h.follow_altcha().await,
+                "password": {
+                    "lock": { "cost": { "mKib": 1024, "t": 1, "p": 1 }, "salt": b64::encode(&[1_u8; 16]) },
+                    "auth": b64::encode(&[1_u8; 32]),
+                },
+            }),
+        )
+        .await;
+    assert_eq!(weak.status, StatusCode::BAD_REQUEST);
+
+    let created = h
+        .post_json(
+            "/public/v2/follow",
+            None,
+            json!({ "altcha": h.follow_altcha().await }),
+        )
+        .await;
+    let code = created.json()["code"].as_str().unwrap().to_owned();
+    let later = now_epoch() + crate::routes::follow::FOLLOW_SHARE_TTL_SECS + 1;
+    assert!(
+        h.state
+            .registry()
+            .follow_share(&code, later)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(h.state.registry().prune_follow_shares(later).unwrap(), 1);
+    assert_eq!(
+        h.get(&format!("/public/v2/follow/{code}"), None)
+            .await
+            .code(),
+        "follow_not_found"
+    );
+}

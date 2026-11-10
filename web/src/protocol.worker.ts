@@ -1,4 +1,4 @@
-type RequestMessage = { id: number; type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock'; payload?: unknown }
+type RequestMessage = { id: number; type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock' | 'followKeys' | 'followOpen'; payload?: unknown }
 
 type WasmExports = {
   memory: WebAssembly.Memory
@@ -70,6 +70,7 @@ workerScope.onmessage = async (event: MessageEvent<RequestMessage>) => {
       return reply(true)
     }
     if (event.data.type === 'transferParse') return reply(transfer('transferParse', { code: input.code }))
+    if (event.data.type === 'followKeys' || event.data.type === 'followOpen') return reply(openBatch(exports, { op: event.data.type, ...(event.data.payload as object) }, 'The follow link could not be opened'))
     if (!syncKeyHex) throw new Error('Unlock your key in this tab first.')
     if (event.data.type === 'transferSend') return reply(transfer('transferSeal', { syncKeyHex, ...input }))
     if (event.data.type === 'manifestInfo' || event.data.type === 'manifestRetention') return reply(openBatch(exports, { op: event.data.type, syncKeyHex, ...(event.data.payload as object) }, 'Vault settings could not be read'))

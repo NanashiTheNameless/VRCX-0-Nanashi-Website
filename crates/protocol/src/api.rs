@@ -56,6 +56,7 @@ pub mod codes {
     pub const TRANSFER_NOT_FOUND: &str = "transfer_not_found";
     pub const CLIENT_NOT_FOUND: &str = "client_not_found";
     pub const COLLECTION_NOT_FOUND: &str = "collection_not_found";
+    pub const FOLLOW_NOT_FOUND: &str = "follow_not_found";
     pub const MANIFEST_SEQ_CONFLICT: &str = "manifest_seq_conflict";
     pub const CHUNK_ID_EXISTS: &str = "chunk_id_exists";
     pub const VAULT_EXISTS: &str = "vault_exists";
@@ -643,4 +644,66 @@ impl TryFrom<ciborium::Value> for CollectorStatus {
             last_error,
         })
     }
+}
+
+/// Anonymous follow link shares. The server holds only sealed locations
+/// (see `crate::follow`) and, for password links, a keyed hash of the auth
+/// value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowSharePassword {
+    pub lock: crate::follow::PasswordLock,
+    #[serde(with = "crate::b64")]
+    pub auth: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareCreate {
+    pub altcha: String,
+    #[serde(default)]
+    pub password: Option<FollowSharePassword>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareCreated {
+    pub code: String,
+    pub write_token: String,
+    pub expires_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareUpdate {
+    #[serde(with = "crate::b64")]
+    pub sealed: Vec<u8>,
+}
+
+/// What anyone with the code sees. `sealed` is only present for public
+/// links; password links answer `FollowShareOpen` instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareView {
+    pub updated_at: Option<i64>,
+    pub expires_at: i64,
+    #[serde(default)]
+    pub password: Option<crate::follow::PasswordLock>,
+    #[serde(default)]
+    pub sealed: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareOpen {
+    #[serde(with = "crate::b64")]
+    pub auth: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowShareSealed {
+    pub updated_at: Option<i64>,
+    #[serde(with = "crate::b64")]
+    pub sealed: Vec<u8>,
 }

@@ -179,7 +179,30 @@ UPDATE blob_deletions SET next_attempt = next_attempt / 1000 - CASE WHEN next_at
 ALTER TABLE audit_log RENAME COLUMN at_ms TO at;
 UPDATE audit_log SET at = at / 1000 - CASE WHEN at < 0 AND at % 1000 != 0 THEN 1 ELSE 0 END;
 "#,
+    r#"
+CREATE TABLE follow_shares (
+    code TEXT PRIMARY KEY,
+    write_hash BLOB NOT NULL,
+    auth_hash BLOB,
+    lock_json TEXT,
+    sealed BLOB,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX follow_shares_expires ON follow_shares (expires_at);
+"#,
 ];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowShareRow {
+    pub write_hash: Vec<u8>,
+    pub auth_hash: Option<Vec<u8>>,
+    pub lock_json: Option<String>,
+    pub sealed: Option<Vec<u8>>,
+    pub updated_at: Option<i64>,
+    pub expires_at: i64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountState {
@@ -580,6 +603,69 @@ impl Registry {
     ) -> DbResult<()> {
         self.conn.execute("INSERT INTO collection_index (code, account_id, listed, title, category, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(code) DO UPDATE SET account_id=excluded.account_id, listed=excluded.listed, title=excluded.title, category=excluded.category, updated_at=excluded.updated_at", params![code, account_id.as_str(), listed as i64, title, category, updated_at])?;
         Ok(())
+    }
+
+    pub fn create_follow_share(
+        &self,
+        code: &str,
+        write_hash: &[u8],
+        auth_hash: Option<&[u8]>,
+        lock_json: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> DbResult<bool> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO follow_shares (code, write_hash, auth_hash, lock_json, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![code, write_hash, auth_hash, lock_json, now, expires_at],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Returns the share unless it expired; expired shares read as missing.
+    pub fn follow_share(&self, code: &str, now: i64) -> DbResult<Option<FollowShareRow>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT write_hash, auth_hash, lock_json, sealed, updated_at, expires_at FROM follow_shares WHERE code = ?1 AND expires_at > ?2",
+                params![code, now],
+                |row| {
+                    Ok(FollowShareRow {
+                        write_hash: row.get(0)?,
+                        auth_hash: row.get(1)?,
+                        lock_json: row.get(2)?,
+                        sealed: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        expires_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn update_follow_share(
+        &self,
+        code: &str,
+        sealed: &[u8],
+        now: i64,
+        expires_at: i64,
+    ) -> DbResult<bool> {
+        let updated = self.conn.execute(
+            "UPDATE follow_shares SET sealed = ?2, updated_at = ?3, expires_at = ?4 WHERE code = ?1 AND expires_at > ?3",
+            params![code, sealed, now, expires_at],
+        )?;
+        Ok(updated == 1)
+    }
+
+    pub fn delete_follow_share(&self, code: &str) -> DbResult<()> {
+        self.conn
+            .execute("DELETE FROM follow_shares WHERE code = ?1", [code])?;
+        Ok(())
+    }
+
+    pub fn prune_follow_shares(&self, now: i64) -> DbResult<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM follow_shares WHERE expires_at <= ?1", [now])?)
     }
 
     pub fn delete_collection_index(&self, account_id: &AccountId, code: &str) -> DbResult<()> {

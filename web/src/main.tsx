@@ -2,6 +2,7 @@ import React, { lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ArrowUpRight } from 'lucide-react'
 import { RelayPage } from './relay'
+import { FollowPage, FollowSharePage, PartyPage } from './follow'
 import { Licenses, PublicCollection, PublicDirectory, Themes } from './publicPages'
 import { APP_SOURCE, DOWNLOAD, SitePage, WEBSITE_SOURCE } from './site'
 import './styles/fonts-0xproto.css'
@@ -86,6 +87,9 @@ function App() {
   if (path === '/themes') return <Themes />
   if (path === '/licenses') return <Licenses />
   if (path === '/collections') return <PublicDirectory />
+  if (path === '/open/follow') return <FollowPage />
+  if (path.startsWith('/f/')) return <FollowSharePage code={path.split('/')[2] ?? ''} />
+  if (path === '/open/party') return <PartyPage />
   if (path.startsWith('/open/')) return <RelayPage />
   if (path.startsWith('/c/')) return <PublicCollection code={path.split('/')[2] ?? ''} />
   if (!DASHBOARD_PATHS.includes(path)) return <NotFoundPage />

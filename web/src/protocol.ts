@@ -27,7 +27,7 @@ function getWorker() {
   return worker
 }
 
-function callWorker(type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock', payload?: unknown): Promise<any> {
+function callWorker(type: 'unlock' | 'forget' | 'open' | 'live' | 'transferStart' | 'transferCode' | 'transferReceive' | 'transferParse' | 'transferSend' | 'manifestInfo' | 'manifestRetention' | 'collectorSealUnlock' | 'followKeys' | 'followOpen', payload?: unknown): Promise<any> {
   const id = nextId++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
@@ -39,6 +39,14 @@ export async function unlockProtocolWorker(syncKeyHex: string) { await callWorke
 export async function forgetProtocolWorker() { if (worker) { await callWorker('forget'); stopProtocolWorker() } }
 export function verifyAndOpenBatch(input: OpenBatch): Promise<any[]> { return callWorker('open', input) }
 export function verifyAndOpenLive(input: { vaultId: string; manifestSeq: number; highestManifestSeq: number | null; manifest: string; liveSeq: number; blob: string }): Promise<any> { return callWorker('live', input) }
+
+export type FollowLocation = {
+  v: number
+  updatedAt: number
+  state: { kind: 'offline' } | { kind: 'private' } | { kind: 'instance'; worldId: string; instanceId: string; worldName: string }
+}
+export const followKeys = (input: { linkKey: string; lock?: unknown; password?: string }): Promise<{ contentKey: string; auth: string | null }> => callWorker('followKeys', input)
+export const followOpen = (input: { contentKey: string; code: string; sealed: string }): Promise<FollowLocation> => callWorker('followOpen', input)
 
 export const transferStart = (): Promise<{ epk: string }> => callWorker('transferStart')
 export const transferCode = (transferId: string): Promise<{ code: string }> => callWorker('transferCode', { transferId })
