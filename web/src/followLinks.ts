@@ -97,6 +97,14 @@ export function userAppLink(userId: string) {
   return `${APP_SCHEME}://user/open?id=${encodeURIComponent(userId)}`
 }
 
+export function userJoinAppLink(userId: string) {
+  return `${APP_SCHEME}://user/join?id=${encodeURIComponent(userId)}`
+}
+
+export function userRequestInviteAppLink(userId: string) {
+  return `${APP_SCHEME}://user/request-invite?id=${encodeURIComponent(userId)}`
+}
+
 export function userVrchatLink(userId: string) {
   return `https://vrchat.com/home/user/${encodeURIComponent(userId)}`
 }

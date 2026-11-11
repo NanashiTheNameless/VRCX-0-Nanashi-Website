@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { apiOriginFetch } from './api'
 import { followKeys, followOpen, type FollowLocation } from './protocol'
 import { appLink, vrchatLink } from './relayLinks'
-import { emojiLabel, parseFollowLink, parsePartyLink, partyAppLink, userAppLink, userVrchatLink, type FollowRequirement } from './followLinks'
+import { emojiLabel, parseFollowLink, parsePartyLink, partyAppLink, userAppLink, userJoinAppLink, userRequestInviteAppLink, userVrchatLink, type FollowRequirement } from './followLinks'
 import { SitePage } from './site'
 
 const REQUIREMENT_TEXT: Record<FollowRequirement, string> = {
@@ -27,14 +27,17 @@ export function FollowPage() {
     <article className="card relay">
       <div className="eyebrow">FOLLOW LINK</div>
       <h1>Join {who}</h1>
-      <p>Send {who} a request invite in VRChat. Their VRCX-0-Nanashi checks your request and invites you if you qualify. This page never shows where they are.</p>
+      <p>Join {who} or ask them for an invite. Their VRCX-0-Nanashi checks each request and invites you if you qualify. This page never shows where they are.</p>
       {link.requirements.length > 0 && <p className="muted">To be invited you need to {link.requirements.map(requirement => REQUIREMENT_TEXT[requirement]).join(', or ')}.</p>}
       {link.emoji && <p className="muted">Want an invite every time they move? Boop them with <strong>{emojiLabel(link.emoji)}</strong>. Boop them with <strong>Stop</strong> to cancel.</p>}
       <small>Shared by the person who sent this link. It was not checked by this website, and their app makes the final decision.</small>
       <div className="relay-actions">
-        <a className="button primary" href={userAppLink(link.userId)}>Open in VRCX-0-Nanashi</a>
-        <a className="button" href={userVrchatLink(link.userId)} rel="noreferrer">Open on the VRChat website</a>
+        <a className="button primary" href={userJoinAppLink(link.userId)}>Join</a>
+        <a className="button" href={userRequestInviteAppLink(link.userId)}>Request an invite</a>
+        <a className="button" href={userVrchatLink(link.userId)} rel="noreferrer">Open profile</a>
+        <a className="button" href={userAppLink(link.userId)}>Open in VRCX-0-Nanashi</a>
       </div>
+      <small>Join and Request an invite open VRCX-0-Nanashi, which asks before sending anything. Without the app, open the profile and use Request Invite in VRChat.</small>
     </article>
   </SitePage>
 }

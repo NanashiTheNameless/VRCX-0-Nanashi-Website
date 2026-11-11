@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { emojiLabel, parseFollowLink, parsePartyLink, partyAppLink, userAppLink } from '../src/followLinks.ts'
+import { emojiLabel, parseFollowLink, parsePartyLink, partyAppLink, userAppLink, userJoinAppLink, userRequestInviteAppLink } from '../src/followLinks.ts'
 
 const A = 'usr_11111111-1111-1111-1111-111111111111'
 const B = 'usr_22222222-2222-2222-2222-222222222222'
@@ -14,6 +14,8 @@ test('reads a follow link and drops unknown requirements and reserved emojis', (
   assert.equal(parseFollowLink(`#u=${A}&u=${B}`), null)
   assert.equal(parseFollowLink(`#u=${A}&n=a%01b`).name, '')
   assert.equal(userAppLink(A), `vrcx-0-nanashi://user/open?id=${A}`)
+  assert.equal(userJoinAppLink(A), `vrcx-0-nanashi://user/join?id=${A}`)
+  assert.equal(userRequestInviteAppLink(A), `vrcx-0-nanashi://user/request-invite?id=${A}`)
 })
 
 test('reads a party link and builds the matching app link', () => {
