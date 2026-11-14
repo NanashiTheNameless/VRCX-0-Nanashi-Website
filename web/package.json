@@ -13,11 +13,11 @@
     "altcha": "^3.5.0",
     "@vitejs/plugin-react": "6.3.0",
     "hash-wasm": "^4.13.0",
-    "lucide-react": "1.70.0",
+    "lucide-react": "1.72.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "typescript": "7.0.2",
-    "vite": "8.3.7",
+    "vite": "8.3.8",
     "zxcvbn": "^4.4.2"
   },
   "devDependencies": {
