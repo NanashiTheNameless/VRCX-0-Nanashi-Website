@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
-    "altcha": "^3.5.0",
+    "altcha": "^3.6.0",
     "@vitejs/plugin-react": "6.3.0",
     "hash-wasm": "^4.13.0",
-    "lucide-react": "1.72.0",
+    "lucide-react": "1.75.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "typescript": "7.0.2",
