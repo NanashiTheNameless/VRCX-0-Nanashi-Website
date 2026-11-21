@@ -25,7 +25,7 @@ pub fn parse_epoch_seconds(text: &str) -> Option<i64> {
     })?;
     Some(
         datetime
-            .to_zoned(jiff::tz::TimeZone::UTC)
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
             .ok()?
             .timestamp()
             .as_nanosecond()
