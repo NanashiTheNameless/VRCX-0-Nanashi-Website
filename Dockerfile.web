@@ -1,4 +1,4 @@
-FROM rust:1.99-trixie AS protocol-wasm
+FROM rust:1.100-trixie AS protocol-wasm
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
@@ -23,7 +23,7 @@ RUN if [ "$SIGNED_MANIFEST" = "1" ]; then \
       npm run build; \
     fi
 
-FROM rust:1.99-trixie AS rust-build
+FROM rust:1.100-trixie AS rust-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
