@@ -818,19 +818,40 @@ async fn control_request(
         return Err("invalid child control response identity".into());
     }
     if value["ok"] != true {
-        let error_code = value["error"]["code"]
-            .as_str()
-            .or_else(|| value["error"].as_str())
-            .or_else(|| value["code"].as_str());
-        if error_code == Some(codes::COLLECTOR_UNAVAILABLE) {
-            return Err(codes::COLLECTOR_UNAVAILABLE.into());
-        }
-        if error_code == Some("auth_failed") {
-            return Err("auth_failed".into());
-        }
-        return Err("child control operation failed".into());
+        return Err(child_failure(&value));
     }
     Ok(value)
+}
+
+/// Child start failures that only concern this session. The child's message
+/// is kept so the status says which case it was; the child sends fixed text.
+const SESSION_START_FAILURES: [&str; 2] = ["auth_failed", "vrchat_unreachable"];
+
+fn child_failure(value: &serde_json::Value) -> String {
+    let error_code = value["error"]["code"]
+        .as_str()
+        .or_else(|| value["error"].as_str())
+        .or_else(|| value["code"].as_str());
+    if error_code == Some(codes::COLLECTOR_UNAVAILABLE) {
+        return codes::COLLECTOR_UNAVAILABLE.into();
+    }
+    if let Some(code) = error_code.filter(|code| SESSION_START_FAILURES.contains(code)) {
+        return match value["error"]["message"].as_str() {
+            Some(message) if !message.is_empty() => format!("{code}: {message}"),
+            _ => code.into(),
+        };
+    }
+    "child control operation failed".into()
+}
+
+/// The state shown for a failed session: its start failure code when there
+/// is one, otherwise "failed".
+fn session_failure_state(error: &str) -> String {
+    SESSION_START_FAILURES
+        .into_iter()
+        .find(|code| error == *code || error.starts_with(&format!("{code}:")))
+        .unwrap_or("failed")
+        .into()
 }
 
 async fn uds_call(
@@ -1064,10 +1085,8 @@ async fn run_child(mut session: ChildSession, mut stop: oneshot::Receiver<()>) {
         state.state = if error == codes::COLLECTOR_UNAVAILABLE {
             session.supervisor.available.store(false, Ordering::Relaxed);
             codes::COLLECTOR_UNAVAILABLE.into()
-        } else if error == "auth_failed" {
-            "auth_failed".into()
         } else {
-            "failed".into()
+            session_failure_state(&error)
         };
         state.last_error = Some(error.chars().take(240).collect());
         Some(state.clone())
@@ -1611,6 +1630,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_start_failures_keep_their_code_and_child_message() {
+        let failure = |code: &str, message: &str| {
+            serde_json::json!({
+                "v": 1, "id": 1, "ok": false,
+                "error": { "code": code, "message": message }
+            })
+        };
+        let auth = child_failure(&failure(
+            "auth_failed",
+            "VRChat did not accept the session (HTTP 401).",
+        ));
+        assert_eq!(
+            auth,
+            "auth_failed: VRChat did not accept the session (HTTP 401)."
+        );
+        assert_eq!(session_failure_state(&auth), "auth_failed");
+
+        let blocked = child_failure(&failure(
+            "vrchat_unreachable",
+            "VRChat's network (Cloudflare) blocked the server's requests.",
+        ));
+        assert_eq!(session_failure_state(&blocked), "vrchat_unreachable");
+        assert!(blocked.ends_with("blocked the server's requests."));
+
+        assert_eq!(child_failure(&failure("auth_failed", "")), "auth_failed");
+        assert_eq!(session_failure_state("auth_failed"), "auth_failed");
+        assert_eq!(
+            child_failure(&failure(codes::COLLECTOR_UNAVAILABLE, "ignored")),
+            codes::COLLECTOR_UNAVAILABLE
+        );
+        assert_eq!(
+            child_failure(&failure("other", "ignored")),
+            "child control operation failed"
+        );
+        assert_eq!(
+            session_failure_state("child control operation failed"),
+            "failed"
+        );
+        assert_eq!(session_failure_state("auth_failed_soon"), "failed");
+    }
 
     #[test]
     fn profile_choices_gate_new_and_legacy_streams_individually() {
